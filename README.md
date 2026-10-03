@@ -10,7 +10,8 @@
 | 文档 | 说明 |
 |---|---|
 | [docs/tutorial/00-大纲.md](docs/tutorial/00-大纲.md) | 系列大纲：24 篇规划、6 个里程碑、全部技术决策 |
-| [docs/tutorial/01-项目启动.md](docs/tutorial/01-项目启动.md) | 第 01 篇：项目骨架（对应本仓库当前代码） |
+| [docs/tutorial/01-项目启动.md](docs/tutorial/01-项目启动.md) | 第 01 篇：项目骨架 |
+| [docs/tutorial/05-流式工具调用.md](docs/tutorial/05-流式工具调用.md) | 第 05 篇：流式输出与工具调用 |
 | [docs/genai-guide.md](docs/genai-guide.md) | genai 0.7.0-rc.1 使用指南（LLM 适配层参考手册） |
 
 > 每篇文章自带完整参考实现（均单独编译验证过）。**建议自己动手从零写**——本仓库的
@@ -22,7 +23,7 @@
 - [x] 02 · 第一次调用（genai exec_chat + Coding Plan 端点覆盖）——已完成
 - [x] 03 · CLI 聊天（流式 + 多轮）【里程碑 M1】——已完成
 - [x] 04 · 工具调用往返（非流式）——已完成：天气工具 + answer_turn 单次工具往返
-- [ ] 05 · 流式 × 工具调用
+- [x] 05 · 流式 × 工具调用——已完成：流式响应捕获 + 多工具结果回填
 - [ ] …完整列表见 [大纲](docs/tutorial/00-大纲.md)
 
 ## 快速开始

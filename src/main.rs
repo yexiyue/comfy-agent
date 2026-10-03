@@ -1,7 +1,7 @@
 use std::io::{BufRead, Write};
 
 use anyhow::Result;
-use comfy_agent::llm::{answer_turn, chat_once, chat_stream};
+use comfy_agent::llm::answer_turn;
 use genai::{
     Client,
     chat::{ChatMessage, ChatRequest},
@@ -65,9 +65,8 @@ async fn main() -> Result<()> {
 
         print!("AI> ");
         std::io::stdout().flush()?;
-        let (h, answer) = answer_turn(&client, &model, history).await?;
+        let (h, _) = answer_turn(&client, &model, history).await?;
         history = h;
-        println!("{answer}");
     }
 
     println!("\nBye!");

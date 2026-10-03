@@ -1,10 +1,10 @@
 use std::io::Write;
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use futures::StreamExt;
 use genai::{
     Client,
-    chat::{ChatMessage, ChatRequest, ChatStreamEvent, ToolResponse},
+    chat::{ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, MessageContent, ToolResponse},
 };
 
 use crate::tools::GetWeather;
@@ -52,36 +52,77 @@ pub async fn answer_turn(
     mut history: ChatRequest,
 ) -> anyhow::Result<(ChatRequest, String)> {
     let req = history.clone().with_tools(vec![GetWeather::tool()]);
-    let res = client.exec_chat(model, req, None).await?;
+    let content = stream_response(client, model, req).await?;
 
-    let first_text = res.first_text().unwrap_or("<无文本回答>").to_owned();
-    let tool_calls = res.into_tool_calls();
+    let answer = content.texts().join("");
+    let tool_calls = content.tool_calls();
 
     if tool_calls.is_empty() {
-        history = history.append_message(ChatMessage::assistant(first_text.clone()));
-        return Ok((history, first_text));
+        history = history.append_message(ChatMessage::assistant(content));
+        return Ok((history, answer));
     }
 
-    let tc = tool_calls.first().unwrap();
+    let mut responses = Vec::new();
 
-    println!("工具调用: {tc:#?}");
+    for tc in tool_calls {
+        println!("  [工具] {}({})", tc.fn_name, tc.fn_arguments);
+        let result: anyhow::Result<serde_json::Value> = (|| {
+            if tc.fn_name != "get_weather" {
+                bail!("未知工具：{}", tc.fn_name);
+            }
+            let args: GetWeather = serde_json::from_value(tc.fn_arguments.clone())
+                .context("模型给的天气参数不符合 schema")?;
+            args.run()
+        })();
+        let value = match result {
+            Ok(value) => value,
+            Err(error) => serde_json::json!({ "error": format!("{error:#}") }),
+        };
+        responses.push(ToolResponse::new(tc.call_id.clone(), value.to_string()));
+    }
 
-    let args: GetWeather = serde_json::from_value(tc.fn_arguments.clone())
-        .with_context(|| format!("解析工具调用参数失败: {tc:#?}"))?;
+    history = history.append_message(ChatMessage::assistant(content));
 
-    let result = args
-        .run()
-        .with_context(|| format!("执行工具调用失败: {tc:#?}"))?;
+    for response in responses {
+        history = history.append_message(response);
+    }
 
-    let tool_response = ToolResponse::new(tc.call_id.clone(), result.to_string());
+    let req = history.clone().with_tools(Vec::<genai::chat::Tool>::new());
+    let content = stream_response(client, model, req).await?;
+    if !content.tool_calls().is_empty() {
+        bail!("总结阶段仍返回了工具调用；本篇仅支持一次工具往返");
+    }
 
-    history = history
-        .append_message(tool_calls)
-        .append_message(tool_response);
-
-    let res = client.exec_chat(model, history.clone(), None).await?;
-    let answer = res.first_text().unwrap_or("<无文本回答>").to_owned();
-    history = history.append_message(ChatMessage::assistant(answer.clone()));
-
+    let answer = content.texts().join("");
+    history = history.append_message(ChatMessage::assistant(content));
     Ok((history, answer))
+}
+
+async fn stream_response(
+    client: &Client,
+    model: &str,
+    req: ChatRequest,
+) -> anyhow::Result<MessageContent> {
+    let options = ChatOptions::default()
+        .with_capture_content(true)
+        .with_capture_tool_calls(true);
+
+    let mut response = client.exec_chat_stream(model, req, Some(&options)).await?;
+
+    while let Some(event) = response.stream.next().await {
+        match event? {
+            ChatStreamEvent::Chunk(chunk) => {
+                print!("{}", chunk.content);
+                std::io::stdout().flush()?;
+            }
+            ChatStreamEvent::End(end) => {
+                println!();
+                return end
+                    .captured_content
+                    .ok_or_else(|| anyhow::anyhow!("没有捕获到内容"));
+            }
+            _ => {}
+        }
+    }
+    bail!("流式响应结束时没有收到 End 事件");
 }
