@@ -98,7 +98,7 @@ pub async fn answer_turn(
     Ok((history, answer))
 }
 
-async fn stream_response(
+pub(crate) async fn stream_response(
     client: &Client,
     model: &str,
     req: ChatRequest,

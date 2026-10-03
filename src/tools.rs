@@ -25,6 +25,9 @@ impl GetWeather {
     }
 
     pub fn run(&self) -> anyhow::Result<serde_json::Value> {
+        if self.city == "上海" {
+            return Err(anyhow::anyhow!("上海的天气数据暂不可用"));
+        }
         Ok(json!({
             "city": self.city,
             "temperature": 22.5,

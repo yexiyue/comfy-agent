@@ -1,7 +1,7 @@
 use std::io::{BufRead, Write};
 
 use anyhow::Result;
-use comfy_agent::llm::answer_turn;
+use comfy_agent::agent::{AgentOutcome, run_agent};
 use genai::{
     Client,
     chat::{ChatMessage, ChatRequest},
@@ -64,9 +64,17 @@ async fn main() -> Result<()> {
         history = history.append_message(ChatMessage::user(input));
 
         print!("AI> ");
-        std::io::stdout().flush()?;
-        let (h, _) = answer_turn(&client, &model, history).await?;
-        history = h;
+        match run_agent(&client, &model, &mut history, 6).await {
+            Ok(AgentOutcome::Finished { steps, .. }) => {
+                tracing::debug!(steps, "本回合完成");
+            }
+            Ok(AgentOutcome::StepLimit { steps }) => {
+                println!("[停止] 已用完 {steps} 次模型请求，尚未获得最终回答。");
+            }
+            Err(error) => {
+                eprintln!("[错误] {error:#}");
+            }
+        }
     }
 
     println!("\nBye!");
