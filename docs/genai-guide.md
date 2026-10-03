@@ -263,6 +263,26 @@ let weather_tool = Tool::new("get_weather")
     }));
 ```
 
+> **推荐：用 schemars 从 Rust 类型生成 schema**，同一 struct 配 `Deserialize` 还能解析
+> 模型回传的参数（doc 注释 → description，enum → 枚举约束，非 Option → required）：
+>
+> ```rust
+> use schemars::JsonSchema;
+>
+> #[derive(JsonSchema, serde::Deserialize)]
+> struct GetWeatherArgs {
+>     /// 城市名
+>     city: String,
+> }
+>
+> let tool = Tool::new("get_weather")
+>     .with_description("...")
+>     .with_schema(schemars::schema_for!(GetWeatherArgs).to_value());  // 别忘 .to_value()
+>
+> // 解析模型参数（fn_arguments 已是 Value）：
+> let args = serde_json::from_value::<GetWeatherArgs>(tc.fn_arguments.clone())?;
+> ```
+
 ### 第 2 步：发起带工具的请求
 
 ```rust
@@ -276,11 +296,11 @@ let chat_req = ChatRequest::new(vec![ChatMessage::user("东京今天天气怎么
 
 ```rust
 let chat_res = client.exec_chat(MODEL, chat_req.clone(), None).await?;
-let tool_calls = chat_res.into_tool_calls();     // Vec<ToolCall>
+let tool_calls = chat_res.into_tool_calls();     // Vec<ToolCall>，消费整个响应
 
 for tc in &tool_calls {
     println!("Function: {}", tc.fn_name);        // "get_weather"
-    println!("Arguments: {}", tc.fn_arguments);  // JSON 字符串，需自己解析
+    println!("Arguments: {}", tc.fn_arguments);  // 已是 serde_json::Value（0.7），可直接取字段
 }
 ```
 
@@ -288,7 +308,7 @@ for tc in &tool_calls {
 
 ```rust
 let tc = &tool_calls[0];
-let args: serde_json::Value = serde_json::from_str(&tc.fn_arguments)?;
+let args = &tc.fn_arguments;   // 0.7 中已是 serde_json::Value，不需要 from_str
 // ……这里调用你真正的实现：查天气、跑 ComfyUI 工作流、查数据库……
 ```
 
@@ -348,8 +368,8 @@ genai 没有直接的 `response_format: json_schema` API（刻意的——那是
 两种替代：
 
 1. **工具调用做结构化提取（推荐，跨厂商通用）**：定义一个名为 `submit_xxx` 的工具，
-   schema 就是你想要的结构，`tool_choice` 设为必选，模型"调用工具"的参数就是结构化结果。
-   教程的提示词增强、偏好提取都会用这个模式。
+   schema 就是你想要的结构（用 schemars 从类型生成，见 §8），`tool_choice` 设为必选，
+   模型"调用工具"的参数就是结构化结果。教程的提示词增强、偏好提取都会用这个模式。
 2. **`with_extra_body` 逃生舱（仅 OpenAI 兼容厂商）**：直接注入厂商私有字段。能跑，但
    换厂商就失效，只用于过渡。
 
@@ -375,7 +395,10 @@ SSE、每行 `data: {json}`、响应头 `x-vercel-ai-ui-message-stream: v1`。
 - **`first_text()` 返回 `Option<&str>`**：是借用不是 `String`，需要拥有时 `.to_owned()`。
   写 `unwrap_or_else(|| "...".into())` 会因 `into()` 被推导为 `&str` 恒等转换而报类型错误。
 - **流式拿不到工具调用**：忘了 `with_capture_tool_calls(true)`，只能看到分片。
-- **fn_arguments 是字符串**：模型给的是 JSON 字符串，`serde_json::from_str` 自己解析。
+- **fn_arguments 是 `serde_json::Value`（0.7 变化）**：可直接取字段；不需要也不能
+  `from_str`。0.6 时代它是 JSON 字符串，老教程/旧示例会误导。
+- **`into_tool_calls()` 会消费响应**：想同时拿文本和工具调用，先 `first_text()`（借用）
+  再 `into_tool_calls()`（移动），顺序反了就编译报错。
 - **`call_id` 必须原样回填**：`ToolResponse::new(call_id, ...)` 对不上号模型会困惑。
 - **历史要自己管**：genai 完全无状态，多轮/工具轮次全靠你 `append_message` 累积。
 - **Ollama 兜底**：无法识别的模型名会落到本地 Ollama，没跑 Ollama 时报连接错误——

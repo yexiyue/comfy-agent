@@ -1,9 +1,11 @@
 use std::io::{BufRead, Write};
 
 use anyhow::Result;
-use comfy_agent::llm::{chat_once, chat_stream};
+use comfy_agent::llm::{answer_turn, chat_once, chat_stream};
 use genai::{
-    Client, chat::{ChatMessage, ChatRequest}, resolver::{Endpoint, ServiceTargetResolver},
+    Client,
+    chat::{ChatMessage, ChatRequest},
+    resolver::{Endpoint, ServiceTargetResolver},
 };
 
 #[tokio::main]
@@ -41,31 +43,31 @@ async fn main() -> Result<()> {
     let mut history = ChatRequest::default()
         .with_system("你是 comfy-agent，一个友好的助手。当前处于终端对话模式，回答保持简洁。");
 
-    let stdin=std::io::stdin();
+    let stdin = std::io::stdin();
 
     loop {
         print!("\n你> ");
         std::io::stdout().flush()?;
         let mut line = String::new();
-        if stdin.lock().read_line(&mut line)?==0{
-            break;
-        }
-        
-        let input=line.trim();
-        if input.is_empty(){
-            continue;
-        }
-        if input=="exit" || input=="quit"{
+        if stdin.lock().read_line(&mut line)? == 0 {
             break;
         }
 
-        history=history.append_message(ChatMessage::user(input));
+        let input = line.trim();
+        if input.is_empty() {
+            continue;
+        }
+        if input == "exit" || input == "quit" {
+            break;
+        }
+
+        history = history.append_message(ChatMessage::user(input));
 
         print!("AI> ");
         std::io::stdout().flush()?;
-        let answer=chat_stream(&client, &model, history.clone()).await?;
-
-        history=history.append_message(ChatMessage::assistant(&answer));
+        let (h, answer) = answer_turn(&client, &model, history).await?;
+        history = h;
+        println!("{answer}");
     }
 
     println!("\nBye!");
