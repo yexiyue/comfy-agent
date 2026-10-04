@@ -595,6 +595,37 @@ async fn conservative_side_effects_need_attention_and_external_ids_reconcile_wit
             assert_eq!(paused.status, RunStatus::Paused);
             let tool = service.store.tool(&run.id, "call-second").await?.unwrap();
             assert_eq!(tool.external_id.as_deref(), Some("external-job-1"));
+            let before = service.store.conversation(&run.conversation_id).await?;
+            let steering = service
+                .control(Control {
+                    run_id: run.id.clone(),
+                    expected_version: paused.version,
+                    request_id: Uuid::new_v4().to_string(),
+                    action: ControlAction::Steer {
+                        expected_revision: before.revision,
+                        message: UiMessage {
+                            id: Uuid::new_v4().to_string(),
+                            role: "user".into(),
+                            parts: vec![json!({"type":"text","text":"replace pending work"})],
+                            metadata: None,
+                        },
+                    },
+                })
+                .await;
+            assert!(matches!(
+                steering,
+                Err(runtime::store::StoreError::Conflict)
+            ));
+            assert_eq!(service.store.run(&run.id).await?.status, RunStatus::Paused);
+            assert_eq!(
+                service
+                    .store
+                    .conversation(&run.conversation_id)
+                    .await?
+                    .revision,
+                before.revision
+            );
+            assert_eq!(queries.load(Ordering::SeqCst), 0);
             let resumed = service
                 .control(Control {
                     run_id: run.id.clone(),

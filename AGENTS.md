@@ -7,9 +7,9 @@ This Rust 2024 project is a virtual Cargo workspace. Shared dependencies and lin
 - `crates/agent/`: agent loop, streaming events, model configuration, and tool registry.
 - `crates/tools/`: `AgentTool` interface and exported `#[agent_tool]` attribute.
 - `crates/tool-macros/`: procedural macro implementation.
-- `crates/server/`: Axum commands, authoritative snapshots, and independent SSE subscriptions.
-- `crates/runtime/`: domain state, storage ports, and persisted phase execution; no HTTP/ORM dependency.
-- `crates/persistence/`: Toasty PostgreSQL transactions, explicit migrations, Apalis queue/outbox and recovery.
+- `crates/server/`: `routes/` groups Axum endpoints by resource; `views.rs` shares response projections; `stream.rs` owns SSE replay and boundaries.
+- `crates/runtime/`: domain state and storage ports; `execution.rs` owns attempt lifecycle, `execution/driver/` handles model/tool phases; no HTTP/ORM dependency.
+- `crates/persistence/`: Toasty semantic transactions in `repository.rs`, private SQL/codec helpers in `repository/records.rs`, explicit migrations, Apalis queue/outbox and recovery.
 - `crates/telemetry/`: OpenInference spans, content policy, bounded OTLP export, and terminal outcomes. Hosts initialize exporters; the agent core does not.
 - `crates/*/tests/`: integration tests for agent behavior and generated tools.
 - `workflows/`: ComfyUI frontend and API JSON examples.
@@ -50,7 +50,7 @@ Backend address comes from `VITE_API_BASE` in `apps/web/.env` (default `http://l
 
 ## Coding Style & Naming Conventions
 
-Follow rustfmt defaults: four-space indentation, `snake_case` functions/modules, `PascalCase` types, and `SCREAMING_SNAKE_CASE` constants. Keep reusable dependencies in `[workspace.dependencies]` and inherit workspace lints; unsafe code is forbidden. Preserve the single Agent phase machine. Acquire conversation locks before run locks, fence durable writes by live lease/generation, and commit decisions/results before external actions. Tools default to conservative recovery; declare safe/idempotent/reconcilable policies explicitly. Keep terminal output outside the agent core and expose progress through events. Use Mermaid for useful documentation diagrams.
+Follow rustfmt defaults: four-space indentation, `snake_case` functions/modules, `PascalCase` types, and `SCREAMING_SNAKE_CASE` constants. Keep reusable dependencies in `[workspace.dependencies]` and inherit workspace lints; unsafe code is forbidden. Preserve the single Agent phase machine. Acquire conversation locks before run locks, fence durable writes by live lease/generation, and commit decisions/results before external actions. Tools default to conservative recovery; declare safe/idempotent/reconcilable policies explicitly. A resumable external operation must be reconciled before steering; safe resumption does not imply safe abandonment. Fence frontend asynchronous results by conversation selection lifetime and task identity. Keep terminal output outside the agent core and expose progress through events. Use Mermaid for useful documentation diagrams.
 
 ## Testing Guidelines
 

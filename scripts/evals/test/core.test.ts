@@ -29,6 +29,18 @@ test('tool grading catches parameters, output, and recovery states',()=>{
   assert.equal(recovery.task.score,1);assert.equal(recovery.outputs.score,1);
   assert.equal(grade(c,[],'budget-skipped').task.score,null);
 });
+test('failed fixture startup releases its generated executable',async()=>{
+  const {readdir}=await import('node:fs/promises');
+  const output=fileURLToPath(new URL('../../../outputs/',import.meta.url));
+  const before=new Set((await readdir(output)).filter(name=>name.startsWith('eval-server-')));
+  const concurrency=process.env.WORKER_CONCURRENCY;
+  process.env.WORKER_CONCURRENCY='0';
+  try{await assert.rejects(startMock(),/Server failed/);}finally{
+    if(concurrency===undefined)delete process.env.WORKER_CONCURRENCY;else process.env.WORKER_CONCURRENCY=concurrency;
+  }
+  const after=(await readdir(output)).filter(name=>name.startsWith('eval-server-'));
+  assert(after.every(name=>before.has(name)),'Failed fixture leaked an executable');
+});
 test('real Rust SSE handles isolated trials, failure, timeout, history and budget',async()=>{
   const mock=await startMock();
   try {

@@ -1,6 +1,8 @@
 //! Durable HTTP commands and independent UI Message Stream subscriptions.
-mod durable;
 pub mod protocol;
+mod routes;
+mod stream;
+mod views;
 use agent::{ToolRegistry, agent_tool};
 use axum::{
     Json, Router,
@@ -46,19 +48,16 @@ pub fn default_registry() -> anyhow::Result<ToolRegistry> {
 pub fn router(state: AppState, origins: Vec<HeaderValue>) -> Router {
     Router::new()
         .route("/health", get(|| async { Json(json!({"status":"ok"})) }))
-        .route("/api/chat", post(durable::chat))
-        .route(
-            "/api/conversations",
-            get(durable::list).post(durable::create),
-        )
-        .route("/api/conversations/{id}", get(durable::snapshot))
+        .route("/api/chat", post(routes::chat))
+        .route("/api/conversations", get(routes::list).post(routes::create))
+        .route("/api/conversations/{id}", get(routes::snapshot))
         .route(
             "/api/conversations/{id}/commands/{request_id}",
-            get(durable::receipt),
+            get(routes::receipt),
         )
-        .route("/api/runs/{id}", get(durable::run))
-        .route("/api/runs/{id}/{action}", post(durable::control))
-        .route("/api/chat/{id}/stream", get(durable::stream))
+        .route("/api/runs/{id}", get(routes::run))
+        .route("/api/runs/{id}/{action}", post(routes::control))
+        .route("/api/chat/{id}/stream", get(stream::stream))
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .layer(
             CorsLayer::new()

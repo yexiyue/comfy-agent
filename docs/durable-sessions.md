@@ -116,3 +116,23 @@ pnpm -C apps/web test
 ```
 
 进程级模拟门禁覆盖网页断开、模型暂停重做、原样继续/追加指令、正常关闭、强制退出后租约恢复以及官方 UIMessage 重放。所有这些验证使用本机模型替身，不使用生产 key 或付费模型。
+
+
+## 模块边界与维护约定
+
+```mermaid
+flowchart LR
+    HTTP[server routes / views] --> Runtime[runtime storage ports / execution lifecycle]
+    SSE[server stream / protocol boundaries] --> Runtime
+    Runtime --> Driver[shared Checkpoint / model and tool phases]
+    PostgreSQL[persistence transactions / records] -. implements .-> Runtime
+    Queue[Apalis outbox / recovery] --> Runtime
+```
+
+HTTP 模块只负责请求验证、状态码和响应投影；SSE 模块集中处理重放与文本/步骤闭合。runtime 的生命周期负责取消、租约监测与 attempt 观测，模型和工具各自驱动单个阶段，仍由唯一 `Checkpoint::next()` 决定下一步。persistence 将语义事务保留在同一位置，SQL/codec 辅助函数为私有子模块，不能在拆分中改变锁顺序或原子提交边界。
+
+这样划分遵循 [Rust 的模块与可见性机制](https://doc.rust-lang.org/stable/book/ch07-02-defining-modules-to-control-scope-and-privacy.html) 和 [Axum 的 State/Router 组合方式](https://docs.rs/axum/latest/axum/extract/struct.State.html)：按职责隐藏实现，保留现有公共 API，避免为每个函数再添加一层接口。
+
+前端切换会话会取消旧查询，并通过选择代次校验返回结果；轮询和 stream 数据还验证 run 身份与版本。测试夹具的模型替身、服务进程和数据库生命周期分离，启动失败与正常关闭走同一清理路径。
+
+可恢复的外部动作不等于可放弃的动作：Idempotent / Reconcilable 工具尚未确认结果时，暂停后可以原样继续，但 steer 返回 409。先继续并查询原操作结果，或人工核对后明确终止；系统不会代替外部服务撤销动作。
