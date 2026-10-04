@@ -1,4 +1,6 @@
 //! Durable HTTP commands and independent UI Message Stream subscriptions.
+pub mod api;
+pub mod config;
 pub mod protocol;
 mod routes;
 mod stream;
@@ -8,7 +10,7 @@ use axum::{
     Json, Router,
     extract::DefaultBodyLimit,
     http::{HeaderValue, Method, header},
-    routing::{get, post},
+    routing::get,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -45,19 +47,31 @@ pub fn default_registry() -> anyhow::Result<ToolRegistry> {
     Ok(registry)
 }
 
+#[utoipa::path(get, path = "/health", operation_id = "getHealth", tag = "health",
+    responses((status = 200, body = api::Health)))]
+async fn health() -> Json<api::Health> {
+    Json(api::Health {
+        status: "ok".into(),
+    })
+}
+
+fn api_router() -> utoipa_axum::router::OpenApiRouter<AppState> {
+    routes::router()
+        .routes(utoipa_axum::routes!(health))
+        .routes(utoipa_axum::routes!(stream::stream))
+}
+
+pub fn openapi() -> utoipa::openapi::OpenApi {
+    api_router().into_openapi()
+}
+
 pub fn router(state: AppState, origins: Vec<HeaderValue>) -> Router {
-    Router::new()
-        .route("/health", get(|| async { Json(json!({"status":"ok"})) }))
-        .route("/api/chat", post(routes::chat))
-        .route("/api/conversations", get(routes::list).post(routes::create))
-        .route("/api/conversations/{id}", get(routes::snapshot))
+    let (router, document) = api_router().split_for_parts();
+    router
         .route(
-            "/api/conversations/{id}/commands/{request_id}",
-            get(routes::receipt),
+            "/api/openapi.json",
+            get(move || async move { Json(document) }),
         )
-        .route("/api/runs/{id}", get(routes::run))
-        .route("/api/runs/{id}/{action}", post(routes::control))
-        .route("/api/chat/{id}/stream", get(stream::stream))
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .layer(
             CorsLayer::new()

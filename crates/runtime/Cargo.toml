@@ -13,8 +13,6 @@ anyhow.workspace = true
 futures.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
 tokio-util.workspace = true
-uuid.workspace = true
-sha2.workspace = true
 telemetry.workspace = true
 tracing.workspace = true
 opentelemetry.workspace = true

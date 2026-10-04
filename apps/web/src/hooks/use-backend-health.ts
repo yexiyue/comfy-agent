@@ -1,29 +1,21 @@
-import { useCallback, useEffect, useState } from 'react'
-
-import { API_BASE, HEALTH_ENDPOINT } from '@/lib/api'
+import { useQuery } from '@tanstack/react-query'
+import { getHealthOptions } from '@/api/generated/@tanstack/react-query.gen'
+import { API_BASE } from '@/api/client'
 
 export type BackendHealth = 'checking' | 'up' | 'down'
 
-/** 挂载时探测一次后端 /health；返回可手动重试的探测函数。 */
-export function useBackendHealth(): {
-  health: BackendHealth
-  address: string
-  probe: () => Promise<void>
-} {
-  const [health, setHealth] = useState<BackendHealth>('checking')
-
-  const probe = useCallback(async () => {
-    try {
-      const response = await fetch(HEALTH_ENDPOINT)
-      setHealth(response.ok ? 'up' : 'down')
-    } catch {
-      setHealth('down')
-    }
-  }, [])
-
-  useEffect(() => {
-    void probe()
-  }, [probe])
-
-  return { health, address: API_BASE, probe }
+export function useBackendHealth() {
+  const query = useQuery({
+    ...getHealthOptions(),
+    staleTime: 30_000,
+    queryFn: async (context) =>
+      getHealthOptions().queryFn!({
+        ...context,
+        signal: AbortSignal.any([context.signal, AbortSignal.timeout(5000)]),
+      }),
+  })
+  let health: BackendHealth = 'up'
+  if (query.isFetching) health = 'checking'
+  else if (query.isError) health = 'down'
+  return { health, address: API_BASE, probe: query.refetch }
 }

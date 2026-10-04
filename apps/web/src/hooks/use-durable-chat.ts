@@ -1,7 +1,22 @@
 import { useChat } from '@ai-sdk/react'
-import { DefaultChatTransport } from 'ai'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { API_BASE, CHAT_ENDPOINT } from '@/lib/api'
+import { DefaultChatTransport, validateUIMessages } from 'ai'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react'
+import {
+  controlRunMutation,
+  createConversationMutation,
+  getConversationOptions,
+  getRunOptions,
+  listConversationsOptions,
+} from '@/api/generated/@tanstack/react-query.gen'
+import type { ConversationView, RunAction } from '@/api/generated/types.gen'
+import { CHAT_ENDPOINT } from '@/api/client'
 import type { ChatUIMessage } from '@/lib/chat'
 import { SessionRequests } from '@/lib/session-requests'
 import {
@@ -12,21 +27,57 @@ import {
   type Snapshot,
 } from '@/lib/session'
 
+async function snapshotFrom(
+  view: ConversationView,
+): Promise<Snapshot<ChatUIMessage>> {
+  return {
+    ...view,
+    messages: await validateUIMessages<ChatUIMessage>({
+      messages: view.messages,
+    }),
+  }
+}
+const errorText = (error: unknown) =>
+  error instanceof Error ? error.message : '后端请求失败'
+
 export function useDurableChat() {
+  const queryClient = useQueryClient()
   const [snapshot, setSnapshot] = useState<Snapshot<ChatUIMessage> | null>(null)
   const [run, setRun] = useState<Run | null>(null)
-  const [sessions, setSessions] = useState<Snapshot<ChatUIMessage>[]>([])
-  const [operation, setOperation] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [operating, setOperating] = useState(false)
   const [failure, setFailure] = useState<string | null>(null)
   const snapshotRef = useRef(snapshot)
   const runRef = useRef(run)
   const loadRef = useRef<(id?: string) => Promise<void>>(async () => {})
-  const requests = useRef(new SessionRequests())
-  const polling = useRef(false)
+  const [requests] = useState(() => new SessionRequests())
   const operationRef = useRef(false)
+  const { mutateAsync: create, isPending: creating } = useMutation(
+    createConversationMutation(),
+  )
+  const { mutateAsync: command, isPending: controlling } =
+    useMutation(controlRunMutation())
+  const list = useQuery(listConversationsOptions({ query: { limit: 100 } }))
+  const runQuery = useQuery({
+    ...getRunOptions({ path: { id: run?.id ?? '' } }),
+    enabled: !!run && !loading && !controlling,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status
+      return status &&
+        [
+          'finished',
+          'failed',
+          'cancelled',
+          'superseded',
+          'step-limit',
+        ].includes(status)
+        ? false
+        : 1000
+    },
+  })
 
-  const transport = useMemo(
+  const [transport] = useState(
+    // oxlint-disable-next-line react/refs -- The constructor stores callbacks; refs are read only when a request starts.
     () =>
       new DefaultChatTransport<ChatUIMessage>({
         api: CHAT_ENDPOINT,
@@ -38,14 +89,12 @@ export function useDurableChat() {
           return { api: `${CHAT_ENDPOINT}/${runRef.current.id}/stream` }
         },
       }),
-    [],
   )
-
   const chat = useChat<ChatUIMessage>({
     transport,
     onData: (part) => {
-      if (part.type !== 'data-run-state' || requests.current.loading) return
-      const next = part.data as Run
+      if (part.type !== 'data-run-state' || requests.isLoading()) return
+      const next = part.data
       const current = runRef.current
       if (next.conversationId !== snapshotRef.current?.id) return
       if (current && (next.id !== current.id || next.version < current.version))
@@ -55,223 +104,162 @@ export function useDurableChat() {
     },
     onFinish: ({ message }) => {
       const id = snapshotRef.current?.id
-      if (
-        id &&
-        !requests.current.loading &&
-        message.metadata?.conversationId === id
-      ) {
+      if (id && !requests.isLoading() && message.metadata?.conversationId === id)
         void loadRef.current(id)
-      }
     },
     onError: (error) => {
-      if (requests.current.loading) return
+      if (requests.isLoading()) return
       setFailure(error.message)
       void loadRef.current(snapshotRef.current?.id)
     },
   })
   const chatRef = useRef(chat)
-  chatRef.current = chat
-
-  const api = useCallback(
-    async <T>(
-      path: string,
-      body?: unknown,
-      signal?: AbortSignal,
-    ): Promise<T> => {
-      const response = await fetch(`${API_BASE}${path}`, {
-        signal,
-        ...(body === undefined
-          ? {}
-          : {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(body),
-            }),
-      })
-      const value = await response.json()
-      if (!response.ok) throw Error(value.error ?? `HTTP ${response.status}`)
-      return value as T
-    },
-    [],
-  )
+  useLayoutEffect(() => {
+    chatRef.current = chat
+  }, [chat])
 
   const load = useCallback(
     async (id?: string) => {
-      const request = requests.current.begin()
+      const request = requests.begin()
       setLoading(true)
       try {
         await chatRef.current.stop()
-        if (!requests.current.isCurrent(request)) return
-        const [next, list] = await Promise.all([
-          id
-            ? api<Snapshot<ChatUIMessage>>(
-                `/api/conversations/${id}`,
-                undefined,
-                request.signal,
-              )
-            : api<Snapshot<ChatUIMessage>>(
-                '/api/conversations',
-                {},
-                request.signal,
-              ),
-          api<Snapshot<ChatUIMessage>[]>(
-            '/api/conversations?limit=100',
-            undefined,
-            request.signal,
-          ),
-        ])
+        if (!requests.isCurrent(request)) return
+        const view = id
+          ? await queryClient.fetchQuery({
+              ...getConversationOptions({ path: { id } }),
+              staleTime: 0,
+            })
+          : await create({ body: {}, signal: request.signal })
+        const next = await snapshotFrom(view)
         const active = next.activeRunId
-          ? await api<Run>(
-              `/api/runs/${next.activeRunId}`,
-              undefined,
-              request.signal,
-            )
+          ? await queryClient.fetchQuery({
+              ...getRunOptions({ path: { id: next.activeRunId } }),
+              staleTime: 0,
+            })
           : null
-        if (!requests.current.isCurrent(request)) return
+        if (!requests.isCurrent(request)) return
         snapshotRef.current = next
         runRef.current = active
         setSnapshot(next)
         setRun(active)
-        setSessions(
-          list.some((session) => session.id === next.id) ? list : [next, ...list],
-        )
         setFailure(null)
         const url = new URL(window.location.href)
         url.searchParams.set('conversation', next.id)
         window.history.replaceState(null, '', url)
         chatRef.current.setMessages(replayMessages(next, active))
+        void queryClient.invalidateQueries({
+          queryKey: listConversationsOptions({ query: { limit: 100 } })
+            .queryKey,
+        })
         if (isRunning(active)) void chatRef.current.resumeStream()
       } catch (error) {
-        if (requests.current.isCurrent(request)) {
-          setFailure(error instanceof Error ? error.message : '会话加载失败')
-        }
+        if (requests.isCurrent(request)) setFailure(errorText(error))
       } finally {
-        if (requests.current.finish(request)) setLoading(false)
+        if (requests.finish(request)) setLoading(false)
       }
     },
-    [api],
+    [queryClient, create, requests],
   )
-  loadRef.current = load
+  useLayoutEffect(() => {
+    loadRef.current = load
+  }, [load])
 
   useEffect(() => {
+    // A replay belongs to the selected conversation even if an old query finishes later.
+    // oxlint-disable-next-line react/set-state-in-effect -- Mounting synchronizes the external chat stream with the persisted snapshot.
     void load(
       new URL(window.location.href).searchParams.get('conversation') ??
         undefined,
     )
     return () => {
-      requests.current.dispose()
+      requests.dispose()
       void chatRef.current.stop()
     }
-  }, [load])
+  }, [load, requests])
 
   useEffect(() => {
-    const timer = window.setInterval(async () => {
-      const current = runRef.current
-      if (
-        !current ||
-        requests.current.loading ||
-        operationRef.current ||
-        polling.current
-      )
-        return
-      const request = requests.current.capture()
-      polling.current = true
-      try {
-        const latest = await api<Run>(
-          `/api/runs/${current.id}`,
-          undefined,
-          request.signal,
-        )
-        if (
-          !requests.current.isCurrent(request) ||
-          runRef.current?.id !== current.id
-        )
-          return
-        if (latest.conversationId !== snapshotRef.current?.id) return
-        if (latest.version < (runRef.current?.version ?? 0)) return
-        if (
-          latest.generation !== current.generation ||
-          latest.status !== current.status
-        ) {
-          await loadRef.current(latest.conversationId)
-        } else {
-          runRef.current = latest
-          setRun(latest)
-        }
-      } catch (error) {
-        if (requests.current.isCurrent(request)) {
-          setFailure(error instanceof Error ? error.message : '任务查询失败')
-        }
-      } finally {
-        polling.current = false
-      }
-    }, 1000)
-    return () => window.clearInterval(timer)
-  }, [api])
+    const latest = runQuery.data
+    const current = runRef.current
+    if (!latest || !current || requests.isLoading() || operationRef.current) return
+    if (
+      latest.id !== current.id ||
+      latest.conversationId !== snapshotRef.current?.id ||
+      latest.version < current.version
+    )
+      return
+    if (
+      latest.generation !== current.generation ||
+      latest.status !== current.status
+    ) {
+      void loadRef.current(latest.conversationId)
+    } else {
+      runRef.current = latest
+      setRun(latest)
+    }
+  }, [runQuery.data, requests])
 
   const control = useCallback(
-    async (action: string, text?: string) => {
+    async (action: RunAction, text?: string) => {
       const current = runRef.current
-      if (!current || operationRef.current || requests.current.loading) return
-      const request = requests.current.capture()
+      if (!current || operationRef.current || requests.isLoading()) return
+      const request = requests.capture()
       const revision = snapshotRef.current?.revision
       operationRef.current = true
-      setOperation(true)
+      setOperating(true)
       try {
-        const latest = await api<Run>(
-          `/api/runs/${current.id}`,
-          undefined,
-          request.signal,
-        )
-        if (
-          !requests.current.isCurrent(request) ||
-          runRef.current?.id !== current.id
-        )
+        const latest = await queryClient.fetchQuery({
+          ...getRunOptions({ path: { id: current.id } }),
+          staleTime: 0,
+        })
+        if (!requests.isCurrent(request) || runRef.current?.id !== current.id)
           return
-        const extra = text
-          ? {
-              expectedRevision: revision,
-              message: {
-                id: crypto.randomUUID(),
-                role: 'user',
-                parts: [{ type: 'text', text }],
-              },
-            }
-          : {}
-        await api(
-          `/api/runs/${current.id}/${action}`,
-          {
+        await command({
+          path: { id: current.id, action },
+          signal: request.signal,
+          body: {
             conversationId: latest.conversationId,
             expectedVersion: latest.version,
             requestId: crypto.randomUUID(),
-            ...extra,
+            ...(text
+              ? {
+                  expectedRevision: revision,
+                  message: {
+                    id: crypto.randomUUID(),
+                    role: 'user' as const,
+                    parts: [{ type: 'text', text }],
+                  },
+                }
+              : {}),
           },
-          request.signal,
-        )
-        if (requests.current.isCurrent(request))
+        })
+        if (requests.isCurrent(request))
           await loadRef.current(latest.conversationId)
       } catch (error) {
-        if (requests.current.isCurrent(request)) {
+        if (requests.isCurrent(request)) {
           await loadRef.current(current.conversationId)
-          if (snapshotRef.current?.id === current.conversationId) {
-            setFailure(error instanceof Error ? error.message : '任务操作失败')
-          }
+          if (snapshotRef.current?.id === current.conversationId)
+            setFailure(errorText(error))
         }
       } finally {
         operationRef.current = false
-        setOperation(false)
+        setOperating(false)
       }
     },
-    [api],
+    [queryClient, command, requests],
   )
 
+  const sessions = snapshot
+    ? [snapshot, ...(list.data ?? []).filter((item) => item.id !== snapshot.id)]
+    : (list.data ?? [])
+  const queryError = runQuery.error ?? list.error
   return {
     chat,
     snapshot,
     run,
     sessions,
-    operation: operation || loading,
-    failure,
+    operation: loading || operating || creating || controlling,
+    failure: failure ?? (queryError ? errorText(queryError) : null),
     load,
     control,
   }

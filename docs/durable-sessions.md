@@ -136,3 +136,12 @@ HTTP 模块只负责请求验证、状态码和响应投影；SSE 模块集中�
 前端切换会话会取消旧查询，并通过选择代次校验返回结果；轮询和 stream 数据还验证 run 身份与版本。测试夹具的模型替身、服务进程和数据库生命周期分离，启动失败与正常关闭走同一清理路径。
 
 可恢复的外部动作不等于可放弃的动作：Idempotent / Reconcilable 工具尚未确认结果时，暂停后可以原样继续，但 steer 返回 409。先继续并查询原操作结果，或人工核对后明确终止；系统不会代替外部服务撤销动作。
+
+
+## 接口契约与前端查询
+
+资源路由通过 utoipa-axum 的 `OpenApiRouter` 注册，Rust 公共 DTO 是接口契约的唯一来源。`GET /api/openapi.json` 与离线导出使用同一个 Router；会话视图不包含模型 SDK history，run 视图不包含 checkpoint 或 lease。修改接口后运行 `pnpm -C apps/web api:generate` 和 `api:check`，提交 OpenAPI 与生成客户端。
+
+前端使用 Hey API 生成的 Fetch SDK 和 TanStack Query options 管理普通查询、轮询及 mutation。AI SDK 仍负责 UIMessage Stream 解析；会话切换、流重放与 generation/version 栅栏属于业务协调，保留在 durable hook 中。HTTP 查询按会话/run 身份隔离缓存，终结任务停止轮询，控制期间停止状态轮询。
+
+服务器配置在入口用 envy 解析和验证，再注入基础设施。Toasty 与 Apalis 各有独立连接池；部署预算按两者连接数之和乘实例数计算，预留迁移和管理连接。池获取和连接创建均设置超时，不依赖外层 SSE/HTTP 超时来释放数据库等待。

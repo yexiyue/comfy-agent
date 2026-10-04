@@ -87,6 +87,19 @@ cargo run -p server
 | `POST /api/runs/{id}/{pause,resume,cancel,steer}` | 明确控制后台任务 |
 | `GET /api/chat/{runId}/stream` | 从头重放有效前缀，随后读取新增事件 |
 | `GET /api/conversations/{id}/commands/{requestId}` | 响应丢失后查回已接受的 runId |
+| `GET /api/openapi.json` | 与实际路由同时生成的 OpenAPI 3.1 文档 |
+
+后端使用 utoipa 6 + utoipa-axum 注册路由和收集 OpenAPI；公共 DTO 位于 `crates/server/src/api.rs`，会话响应只包含 UI 消息和会话信息，不暴露模型 history 或执行 checkpoint。前端通过 `@hey-api/openapi-ts` 生成类型、Fetch 客户端和 TanStack Query 配置，普通查询/控制与 AI SDK SSE 各自负责对应传输。离线生成不需要启动数据库或配置模型 key：
+
+```sh
+pnpm -C apps/web api:generate
+pnpm -C apps/web api:check
+pnpm -C apps/web test
+```
+
+修改 Rust DTO 或接口注解后重新生成，提交 `docs/api/openapi.json` 和 `apps/web/src/api/generated/`。前端要求 Node 22.18+；TypeScript 固定为 5.9.3，避免当前 openapi-ts 的编译器 API 与 TypeScript 7 不兼容。
+
+服务器用 envy 集中解析并验证配置。`DB_POOL_SIZE`（默认 16）控制业务 Toasty 池，`QUEUE_POOL_SIZE`（默认 8）控制 Apalis SQLx 池；每个后端进程都消耗这两份连接预算。连接获取等待默认 10 秒，首次连接超时默认 5 秒；Toasty 创建新连接也受该超时限制。连接最大生命周期默认 1800 秒、闲置上限 600 秒，变量见 `.env.example`。迁移继续通过独立命令显式执行。
 
 Bash 示例需要 jq；Windows 可保存 JSON 文件，用 `curl.exe --data-binary @request.json`：
 
@@ -125,6 +138,9 @@ $env:TEST_DATABASE_URL = 'postgresql://comfy_agent:comfy_agent_local@127.0.0.1:5
 cargo test -p persistence -p server -- --ignored --test-threads=1
 npm ci --prefix scripts/ai-sdk-check
 npm run check:mock --prefix scripts/ai-sdk-check
+npm ci --prefix scripts/evals
+npm run smoke:api --prefix scripts/evals # 真实后端与生成客户端的契约验证
+npm run smoke:phoenix --prefix scripts/evals # Phoenix、重启恢复与流协议验证
 ```
 
 协议与评测脚本创建并迁移随机子库，退出时仅清理各自子库，保留测试父库。完整生命周期与故障验证见 [持久化会话运行指南](docs/durable-sessions.md)。
@@ -135,7 +151,7 @@ npm run check:mock --prefix scripts/ai-sdk-check
 
 第一次接触这些概念，可以先读 [从零理解 Agent 观测与评测](docs/agent-observability-evaluation.md)：从为什么需要开始，逐步理解 trace、指标与评分，再动手跑通 Phoenix 集成和基线实验。
 
-`apps/web` 是 pnpm 管理的 Vite + React 19 + TypeScript 工程（Tailwind v4、shadcn/ui、AI Elements、AI SDK v7），消费上述 `/api/chat` 协议端点。前置条件：Node 20+ 与 pnpm 10+。
+`apps/web` 是 pnpm 管理的 Vite + React 19 + TypeScript 工程（Tailwind v4、shadcn/ui、AI Elements、AI SDK v7），消费上述 `/api/chat` 协议端点。前置条件：Node 22.18+ 与 pnpm 10+。
 
 ```bash
 pnpm -C apps/web install   # 安装依赖

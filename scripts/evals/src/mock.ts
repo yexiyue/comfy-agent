@@ -12,7 +12,8 @@ export async function startMock(otel = false, maxSteps = 6, real = false) {
     throw Error(
       'Mock eval requires dedicated TEST_DATABASE_URL ending in _test',
     );
-  const mock = createMockModel();
+  const modelCalls = new Map<string, number>();
+  const mock = createMockModel((prompt, count) => modelCalls.set(prompt, count));
   let child: ChildProcess | undefined;
   let runExecutable: string | undefined;
   let fixtureDatabase: string | undefined;
@@ -158,6 +159,13 @@ export async function startMock(otel = false, maxSteps = 6, real = false) {
       api,
       manifest,
       log: () => log,
+      waitForModel: async (prompt: string, count = 1, timeoutMs = 5000) => {
+        const deadline = Date.now() + timeoutMs;
+        while ((modelCalls.get(prompt) ?? 0) < count) {
+          if (Date.now() >= deadline) throw Error('Mock model did not receive the expected request');
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+      },
       get child() {
         return child!;
       },

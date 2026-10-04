@@ -31,6 +31,38 @@ async fn setup_probe() -> Result<Db> {
     Ok(db)
 }
 
+#[tokio::test]
+#[ignore = "requires isolated TEST_DATABASE_URL"]
+async fn configured_business_and_queue_pools_bound_acquisition_and_reuse_connections() -> Result<()>
+{
+    let config = persistence::pool::PoolConfig {
+        max_connections: 1,
+        wait_timeout: Duration::from_millis(100),
+        ..Default::default()
+    };
+    let db = persistence::connect_with_config(&test_url()?, &config).await?;
+    let held = db.connection().await?;
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), db.connection())
+            .await?
+            .is_err()
+    );
+    drop(held);
+    drop(db.connection().await?);
+
+    let queue = config.queue(&test_url()?).await?;
+    let held = queue.acquire().await?;
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), queue.acquire())
+            .await?
+            .is_err()
+    );
+    drop(held);
+    drop(queue.acquire().await?);
+    queue.close().await;
+    Ok(())
+}
+
 async fn insert(db: &mut dyn toasty::Executor, id: &str) -> Result<()> {
     sql::statement("INSERT INTO compatibility_probe VALUES ($1, 0, 'initial')")
         .bind(id)

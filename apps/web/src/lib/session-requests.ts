@@ -4,6 +4,10 @@ export class SessionRequests {
   private epoch = 0
   loading = false
 
+  isLoading(): boolean {
+    return this.loading
+  }
+
   capture(): SessionRequest {
     return { epoch: this.epoch, signal: this.controller.signal }
   }

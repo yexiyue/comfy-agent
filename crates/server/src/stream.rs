@@ -11,6 +11,10 @@ use futures::Stream;
 use runtime::model::{Run, RunStatus};
 use serde_json::json;
 use std::{convert::Infallible, sync::Arc, time::Duration};
+#[utoipa::path(get, path = "/api/chat/{id}/stream", operation_id = "reconnectChat", tag = "chat",
+    params(("id" = String, Path)),
+    responses((status = 200, description = "UI Message Stream v1 replay", body = String, content_type = "text/event-stream"),
+        (status = 404, body = crate::api::ApiError), (status = 503, body = crate::api::ApiError)))]
 pub async fn stream(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     match state.service.store.run(&id).await {
         Ok(run) => sse(state, run),

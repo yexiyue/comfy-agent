@@ -1,9 +1,9 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::sync::Arc;
 
 use agent::AgentConfig;
 use anyhow::Context;
-use axum::http::{HeaderValue, Uri};
 use server::{AppState, default_registry, router};
+use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
@@ -16,40 +16,23 @@ async fn main() -> anyhow::Result<()> {
     let telemetry_config = Arc::new(telemetry::Config::from_env()?);
     let provider = telemetry::init(&telemetry_config)?;
     let config = AgentConfig::from_env()?;
-    let address: SocketAddr = std::env::var("SERVER_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:3001".into())
-        .parse()
-        .context("invalid SERVER_ADDR")?;
-    let origins = std::env::var("CORS_ALLOWED_ORIGINS")
-        .unwrap_or_else(|_| "http://localhost:3000,http://localhost:5173".into())
-        .split(',')
-        .map(|origin| {
-            let origin = origin.trim();
-            anyhow::ensure!(
-                origin.starts_with("http://") || origin.starts_with("https://"),
-                "CORS origins must be explicit HTTP(S) origins"
-            );
-            let uri: Uri = origin.parse().context("invalid CORS origin URI")?;
-            let authority = uri.authority().context("CORS origin requires a host")?;
-            anyhow::ensure!(
-                !authority.as_str().contains(['*', '@'])
-                    && origin == format!("{}://{authority}", uri.scheme_str().unwrap_or_default()),
-                "CORS origins must contain only scheme, host, and optional port"
-            );
-            origin.parse::<HeaderValue>().context("invalid CORS origin")
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+    let settings = server::config::ServerConfig::from_env()?;
+    let address = settings.server_addr;
+    let origins = settings.origins()?;
     let shutdown = CancellationToken::new();
-    let database_url = std::env::var("DATABASE_URL")
-        .context("DATABASE_URL is required; see .env.example and run the explicit migration")?;
-    let store=Arc::new(persistence::repository::PostgresStore::open(&database_url).await.map_err(|_|anyhow::anyhow!("database connection or schema check failed; verify DATABASE_URL and run migrations"))?);
+    let database_url = &settings.database_url;
+    let store = Arc::new(
+        persistence::repository::PostgresStore::open_with_config(
+            database_url,
+            &settings.pool(settings.db_pool_size),
+        )
+        .await
+        .context(
+            "database connection or schema check failed; verify DATABASE_URL and run migrations",
+        )?,
+    );
     let registry = Arc::new(default_registry()?);
-    let worker_config = runtime::execution::WorkerConfig {
-        lease_seconds: env_number("RUN_LEASE_SECONDS", 30)?,
-        heartbeat: std::time::Duration::from_secs(env_number("RUN_HEARTBEAT_SECONDS", 5)?),
-        max_recoveries: env_number("RUN_MAX_RECOVERIES", 5)?,
-        max_event_bytes: env_number("RUN_EVENT_MAX_BYTES", 16777216)?,
-    };
+    let worker_config = settings.worker();
     let mut service = runtime::execution::ExecutionService::new(
         store,
         Arc::new(runtime::execution::GenaiGateway(config.build_client()?)),
@@ -58,7 +41,6 @@ async fn main() -> anyhow::Result<()> {
         shutdown.clone(),
     )?;
     service.telemetry = telemetry_config;
-    use sha2::{Digest, Sha256};
     let tool_schema_hash = format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&service.registry.definitions())?)
@@ -66,9 +48,10 @@ async fn main() -> anyhow::Result<()> {
     service.expected_config = Some((config.model.clone(), tool_schema_hash.clone()));
     let service = Arc::new(service);
     let queue = persistence::queue::QueueRuntime::open(
-        &database_url,
+        database_url,
         &service,
-        env_number("WORKER_CONCURRENCY", 4)?,
+        settings.worker_concurrency,
+        &settings.pool(settings.queue_pool_size),
     )
     .await
     .map_err(|_| {
@@ -83,7 +66,6 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(address = %listener.local_addr()?, "chat server listening");
     if let Ok(path) = std::env::var("AGENT_CONFIG_MANIFEST") {
-        use sha2::{Digest, Sha256};
         let schemas = serde_json::to_value(state.service.registry.definitions())?;
         let hash = |v: &str| format!("{:x}", Sha256::digest(v.as_bytes()));
         let manifest = serde_json::json!({"model":state.model.as_ref(),"maxSteps":state.max_steps,"toolSchemaHash":hash(&schemas.to_string()),"systemPromptHash":hash(""),"promptSource":"server-conversation","toolSchemas":schemas});
@@ -151,12 +133,4 @@ async fn shutdown_signal() -> std::io::Result<()> {
     }
     #[cfg(not(unix))]
     tokio::signal::ctrl_c().await
-}
-
-fn env_number<T: std::str::FromStr>(name: &str, default: T) -> anyhow::Result<T> {
-    match std::env::var(name) {
-        Ok(value) => value.parse().map_err(|_| anyhow::anyhow!("invalid {name}")),
-        Err(std::env::VarError::NotPresent) => Ok(default),
-        Err(_) => Err(anyhow::anyhow!("invalid {name}")),
-    }
 }

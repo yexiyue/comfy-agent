@@ -2,7 +2,7 @@
 
 use anyhow::{Result, ensure};
 use apalis::prelude::*;
-use apalis_postgres::{Config, PgPool, PostgresStorage};
+use apalis_postgres::{Config, PostgresStorage};
 use runtime::{execution::ExecutionService, model::Dispatch};
 use std::sync::Arc;
 
@@ -12,12 +12,17 @@ pub struct QueueRuntime {
 }
 
 impl QueueRuntime {
-    pub async fn open(url: &str, service: &ExecutionService, concurrency: usize) -> Result<Self> {
+    pub async fn open(
+        url: &str,
+        service: &ExecutionService,
+        concurrency: usize,
+        pool_config: &crate::pool::PoolConfig,
+    ) -> Result<Self> {
         ensure!(
             concurrency > 0 && concurrency <= 64,
             "worker concurrency must be between 1 and 64"
         );
-        let pool = PgPool::connect(url).await?;
+        let pool = pool_config.queue(url).await?;
         let exists: bool = sqlx::query_scalar("SELECT to_regclass('apalis.jobs') IS NOT NULL")
             .fetch_one(&pool)
             .await?;

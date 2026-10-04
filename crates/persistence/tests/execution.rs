@@ -346,10 +346,11 @@ async fn apalis_outbox_runs_without_an_http_subscriber() -> Result<()> {
         })
         .await?;
     assert!(!service.store.outbox(64).await?.is_empty());
-    let queue = QueueRuntime::open(&url, &service, 2).await?;
+    let queue =
+        QueueRuntime::open(&url, &service, 2, &persistence::pool::PoolConfig::default()).await?;
     let task = tokio::spawn(queue.run(service.clone()));
     let second_worker = tokio::spawn(
-        QueueRuntime::open(&url, &service, 2)
+        QueueRuntime::open(&url, &service, 2, &persistence::pool::PoolConfig::default())
             .await?
             .run(service.clone()),
     );

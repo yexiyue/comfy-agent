@@ -1,7 +1,7 @@
 // Deterministic local model responses, independent of server/database lifecycle.
 import { createServer, type Server } from 'node:http';
 
-export function createMockModel(): Server {
+export function createMockModel(onRequest: (prompt: string, count: number) => void = () => {}): Server {
   const delta = (value: unknown, reason: string | null, usage?: unknown) =>
     `data: ${JSON.stringify({ id: 'eval', object: 'chat.completion.chunk', created: 0, model: 'gpt-4.1', choices: [{ index: 0, delta: value, finish_reason: reason }], usage })}\n\n`;
   const calls = new Map<string, number>();
@@ -16,6 +16,7 @@ export function createMockModel(): Server {
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
     const count = (calls.get(prompt) ?? 0) + 1;
     calls.set(prompt, count);
+    onRequest(prompt, count);
     if (prompt.startsWith('PAUSE:') && count === 1) {
       res.write(delta({ content: 'abandoned' }, null));
       return;

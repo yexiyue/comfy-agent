@@ -23,7 +23,10 @@ use records::*;
 
 impl PostgresStore {
     pub async fn open(url: &str) -> Result<Self> {
-        let mut db = crate::connect(url).await?;
+        Self::open_with_config(url, &crate::pool::PoolConfig::default()).await
+    }
+    pub async fn open_with_config(url: &str, config: &crate::pool::PoolConfig) -> Result<Self> {
+        let mut db = crate::connect_with_config(url, config).await?;
         migration::check(&mut db).await?;
         Ok(Self { db })
     }

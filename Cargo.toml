@@ -43,6 +43,9 @@ toasty-driver-postgresql = "=0.11.0"
 apalis = "=1.0.0-rc.10"
 apalis-postgres = "=1.0.0-rc.9"
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
+utoipa = "6"
+utoipa-axum = "0.3"
+envy = "0.4"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

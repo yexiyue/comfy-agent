@@ -15,7 +15,6 @@ tracing.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["net", "time", "io-util"] }
-serde.workspace = true
 schemars.workspace = true
 
 [lints]

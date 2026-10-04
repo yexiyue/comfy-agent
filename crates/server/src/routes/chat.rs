@@ -1,6 +1,7 @@
 //! Incremental chat submission and independent stream attachment.
 use super::response::{error, input};
 use crate::AppState;
+use crate::api::{ApiError, UiMessageView};
 use crate::stream::sse;
 use axum::http::HeaderMap;
 use axum::{
@@ -11,16 +12,22 @@ use axum::{
 use runtime::{model::*, store::StoreError};
 use serde::Deserialize;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Chat {
     pub id: String,
+    #[schema(value_type = UiMessageView)]
     pub message: UiMessage,
     pub expected_revision: i64,
     pub request_id: String,
     #[serde(default)]
     pub trigger: Option<String>,
 }
+#[utoipa::path(post, path = "/api/chat", operation_id = "submitChat", tag = "chat",
+    request_body = Chat,
+    responses((status = 200, description = "UI Message Stream v1 SSE; consume with AI SDK", body = String, content_type = "text/event-stream"),
+        (status = 400, body = ApiError), (status = 404, body = ApiError), (status = 409, body = ApiError),
+        (status = 413, body = ApiError), (status = 503, body = ApiError)))]
 pub async fn chat(
     State(state): State<AppState>,
     headers: HeaderMap,
