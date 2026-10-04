@@ -35,18 +35,23 @@ cargo run -p server
 | `session.id` / `agent.run_id` | 服务端会话 ID / 逻辑任务 ID |
 | `agent.outcome` | finished、step-limit、model-error、cancelled、shutdown、queue-overflow、internal-error |
 | `agent.steps` / `agent.tool_calls` | 已完成步骤 / 开始执行的工具次数 |
-| `agent.request_ttft_ms` | 后端接受请求至首个可见 TextDelta |
+| `agent.execution_ttft_ms` / `agent.subscription_ttft_ms` | 后台执行 / 当前订阅至首个回答文本增量；订阅可包含重放 |
 | `agent.model_ttft_ms` | 当前模型调用至首个文本增量 |
+| `agent.model_first_reasoning_ms` | 当前模型调用至首个非空推理增量 |
+| `agent.execution_first_reasoning_ms` / `agent.subscription_first_reasoning_ms` | 后台执行 / 当前订阅至首个推理增量 |
+| `agent.model` / `agent.reasoning_effort` | 当前任务选择的模型 / 显式推理强度；未设置强度时该字段缺失 |
 | `llm.token_count.*` | 每次模型调用提供的 token usage |
 | `agent.tokens.known_total` / `complete` | 已知 token 小计及是否完整 |
 
 token 只在 LLM span 使用官方计数字段，父 span 的自定义小计不重复计入。缓存和 reasoning 是明细，不能再次加到总量。纯工具步骤、提前取消和提供商未返回 usage 时，缺失指标保持未知。`finished` 仅表示执行完成；质量成功由评分器判断。工具错误恢复后根执行仍可 finished。Coding Plan 订阅不能换算为按 token 账单，首版无美元成本估计。
 
-导出缓存最多 2048 spans、批量约每秒提交，网络超时 2 秒；失败/丢弃通过本地诊断报告，不影响聊天。正常关闭先取消并等待活动任务，保留安全任务的恢复资格，再尝试有限时间刷新（最多约 5 秒）。强制终止进程可能丢失最后一批。测试 runner 在 Windows 使用显式 `SERVER_SHUTDOWN_STDIN=true` 并写入 `shutdown`，让退出和 flush 可验证；平时使用 Ctrl+C，Unix 还支持 SIGTERM。
+推理首包与回答首包分别记录：长时间推理时，回答 TTFT 大不代表流一直没有数据。步骤 span 覆盖模型、工具与本步结果提交，终态判断不额外创建步骤。导出保留依赖 span 以维持父子关系，过滤依赖库低级别日志事件；业务事件及依赖的 WARN/ERROR 仍保留。
+
+依赖 span 在进入导出队列前过滤，避免挤掉业务轨迹；业务导出缓存最多 2048 spans、批量约每秒提交，网络超时 2 秒；失败/丢弃通过本地诊断报告，不影响聊天。正常关闭先取消并等待活动任务，保留安全任务的恢复资格，再尝试有限时间刷新（最多约 5 秒）。强制终止进程可能丢失最后一批。测试 runner 在 Windows 使用显式 `SERVER_SHUTDOWN_STDIN=true` 并写入 `shutdown`，让退出和 flush 可验证；平时使用 Ctrl+C，Unix 还支持 SIGTERM。
 
 ## 内容策略
 
-`OBS_CAPTURE_CONTENT=false` 是默认值，轨迹无原始提示、历史、回答和工具参数/结果。合成数据调试需要内容时显式开启；结构化凭据字段、常见凭据模式和 binary/base64 被屏蔽，字符串按 UTF-8 字节上限截断并标记。原始提供商错误 body 不记录。自由文本脱敏无法覆盖所有秘密，真实用户数据建议保持默认模式；截断内容不作为可重放历史。
+`OBS_CAPTURE_CONTENT=false` 是默认值，轨迹无原始提示、历史、回答和工具参数/结果。合成数据调试需要内容时显式开启；结构化凭据字段、常见凭据模式和 binary/base64 被屏蔽。超出字节预算时输出合法 JSON 包装 `{"truncated":true,"preview":"…"}`，预算过小时使用合法 JSON 占位值，并保留截断标记与原字节数。这只影响观测副本，模型历史与持久化 checkpoint 保持完整。原始提供商错误 body 不记录。自由文本脱敏无法覆盖所有秘密，真实用户数据建议保持默认模式；截断内容不作为可重放历史。
 
 ## 评测
 

@@ -8,10 +8,10 @@ use axum::{
     response::Response,
 };
 use futures::future::BoxFuture;
-use genai::chat::{ChatRequest, MessageContent};
+use genai::chat::ChatRequest;
 use http_body_util::BodyExt;
 use runtime::{
-    execution::{ExecutionService, ModelGateway, WorkerConfig},
+    execution::{ExecutionService, ModelDelta, ModelGateway, WorkerConfig},
     model::*,
 };
 use serde_json::{Value, json};
@@ -34,17 +34,21 @@ impl ModelGateway for Model {
         &'a self,
         _model: &'a str,
         request: ChatRequest,
-        text: &'a mut (dyn FnMut(String) + Send),
+        _reasoning_effort: Option<&'a str>,
+        text: &'a mut (dyn FnMut(ModelDelta) + Send),
     ) -> BoxFuture<'a, Result<agent::ModelResponse>> {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
             assert!(!request.messages.is_empty());
-            text("hello".into());
+            text(ModelDelta::Reasoning("Let me think.".into()));
+            text(ModelDelta::Text("hello".into()));
             if self.block {
                 std::future::pending::<()>().await;
             }
             Ok(agent::ModelResponse {
-                content: MessageContent::from_text("hello"),
+                content: genai::chat::ChatMessage::assistant("hello")
+                    .with_reasoning_content(Some("Let me think.".into()))
+                    .content,
                 usage: None,
                 stop_reason: None,
             })
@@ -72,6 +76,7 @@ async fn fixture(block: bool) -> Result<(AppState, Arc<AtomicUsize>, String)> {
     )?);
     Ok((
         AppState {
+            chat_config: Arc::new(server::api::ChatConfig::new("mock", "")?),
             service,
             model: "mock".into(),
             max_steps: 2,
@@ -140,6 +145,38 @@ async fn chunks(response: Response) -> Vec<Value> {
                 .and_then(|line| serde_json::from_str(line).ok())
         })
         .collect()
+}
+
+#[tokio::test]
+#[ignore = "requires dedicated TEST_DATABASE_URL"]
+async fn submitted_model_settings_are_validated_and_saved_in_the_run_view() -> Result<()> {
+    let (mut state, calls, url) = fixture(false).await?;
+    state.chat_config = Arc::new(server::api::ChatConfig::new(
+        "bigmodel::glm-5.3-flash",
+        "bigmodel::glm-5.3",
+    )?);
+    let config = value(request(&state, "/api/chat/config", None).await).await;
+    assert_eq!(config["models"][0]["defaultReasoningEffort"], "low");
+    let id = conversation(&state).await;
+    let response = request(
+        &state,
+        "/api/chat",
+        Some(json!({"id":id,"expectedRevision":0,"requestId":"settings",
+            "message":message("u1"),"model":"bigmodel::glm-5.3","reasoningEffort":"high"})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let conversation = state.service.store.conversation(&id).await?;
+    let run_id = conversation.active_run_id.unwrap();
+    let run = state.service.store.run(&run_id).await?;
+    assert_eq!(run.model, "bigmodel::glm-5.3");
+    assert_eq!(run.reasoning_effort.as_deref(), Some("high"));
+    let view = value(request(&state, &format!("/api/runs/{run_id}"), None).await).await;
+    assert_eq!(view["model"], run.model);
+    assert_eq!(view["reasoningEffort"], "high");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    drop(response);
+    common::cleanup(&url).await
 }
 
 #[tokio::test]
@@ -257,7 +294,15 @@ async fn authoritative_snapshots_idempotent_submission_replay_and_second_turn() 
     let snapshot = state.service.store.conversation(&id).await?;
     assert_eq!(snapshot.messages.len(), 2);
     assert_eq!(snapshot.history.messages.len(), 2);
-    assert_eq!(snapshot.messages[1].parts[1]["text"], "hello");
+    assert_eq!(snapshot.messages[1].parts[1]["type"], "reasoning");
+    assert_eq!(snapshot.messages[1].parts[1]["text"], "Let me think.");
+    assert_eq!(snapshot.messages[1].parts[1]["state"], "done");
+    assert_eq!(snapshot.messages[1].parts[2]["text"], "hello");
+    assert!(
+        snapshot.history.messages[1]
+            .content
+            .contains_reasoning_content()
+    );
     let retry = request(
         &state,
         "/api/chat",
@@ -283,6 +328,8 @@ async fn invalid_commands_cors_body_limit_and_health_do_not_call_model() -> Resu
     let id = conversation(&state).await;
     for body in [
         json!({"id":id,"messages":[message("u1")]}),
+        json!({"id":id,"expectedRevision":0,"requestId":"bad-model","message":message("u1"),"model":"unknown"}),
+        json!({"id":id,"expectedRevision":0,"requestId":"bad-effort","message":message("u1"),"reasoningEffort":"high"}),
         json!({"id":id,"expectedRevision":0,"requestId":"bad","message":message("u1"),"trigger":"regenerate-message"}),
         json!({"id":id,"expectedRevision":0,"requestId":"bad","message":{"id":"u1","role":"user","parts":[{"type":"file"}]}}),
     ] {
@@ -410,7 +457,10 @@ async fn memory_exporter_correlates_attempts_and_keeps_disconnect_distinct_from_
                     .with_writer(std::io::sink)
                     .with_filter(tracing_subscriber::EnvFilter::new("info")),
             )
-            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("durable-test"))),
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("durable-test")))
+            .with(tracing_subscriber::filter::filter_fn(
+                telemetry::trace_metadata,
+            )),
     )?;
     let (mut state, _, url) = fixture(false).await?;
     Arc::get_mut(&mut state.service).unwrap().telemetry = Arc::new(telemetry::Config {
@@ -509,6 +559,33 @@ async fn memory_exporter_correlates_attempts_and_keeps_disconnect_distinct_from_
     common::cleanup(&url).await?;
     provider.force_flush()?;
     let spans = exporter.get_finished_spans()?;
+    let completed_trace_ids = [
+        a_attempt.trace_id.as_deref().unwrap(),
+        b_attempt.trace_id.as_deref().unwrap(),
+    ];
+    for trace in completed_trace_ids {
+        let steps: Vec<_> = spans
+            .iter()
+            .filter(|span| span.name == "step" && span.span_context.trace_id().to_string() == trace)
+            .collect();
+        assert_eq!(
+            steps.len(),
+            1,
+            "a completed one-step answer must not create an extra terminal step"
+        );
+        let root = spans
+            .iter()
+            .find(|span| {
+                span.name == "agent.run" && span.span_context.trace_id().to_string() == trace
+            })
+            .unwrap();
+        assert!(
+            root.attributes
+                .iter()
+                .any(|a| a.key.as_str() == "agent.execution_first_reasoning_ms")
+        );
+    }
+
     let run_ids = [&a.id, &b.id, &run.id];
     let attempt_ids = [&a_attempt.id, &b_attempt.id, &attempt.id];
     let roots: Vec<_> = spans

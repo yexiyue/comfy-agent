@@ -18,7 +18,7 @@ export function createMockModel(onRequest: (prompt: string, count: number) => vo
     calls.set(prompt, count);
     onRequest(prompt, count);
     if (prompt.startsWith('PAUSE:') && count === 1) {
-      res.write(delta({ content: 'abandoned' }, null));
+      res.write(delta({ reasoning_content: 'abandoned thinking' }, null));
       return;
     }
     if (prompt.startsWith('DELAY:')) {
@@ -96,6 +96,7 @@ export function createMockModel(onRequest: (prompt: string, count: number) => vo
       };
     }
     res.end(
+      delta({ reasoning_content: prompt.startsWith('PAUSE:') ? 'fresh thinking' : 'Plan this response.' }, null) +
       delta(value, null) +
         delta({}, reason, {
           prompt_tokens: 10,

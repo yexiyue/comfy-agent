@@ -84,6 +84,25 @@
         }
       }
     },
+    "/api/chat/config": {
+      "get": {
+        "tags": [
+          "chat"
+        ],
+        "operationId": "getChatConfig",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatConfig"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/chat/{id}/stream": {
       "get": {
         "tags": [
@@ -594,6 +613,22 @@
           "message": {
             "$ref": "#/components/schemas/UiMessageView"
           },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reasoningEffort": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "requestId": {
             "type": "string"
           },
@@ -605,6 +640,24 @@
           }
         },
         "additionalProperties": false
+      },
+      "ChatConfig": {
+        "type": "object",
+        "required": [
+          "defaultModel",
+          "models"
+        ],
+        "properties": {
+          "defaultModel": {
+            "type": "string"
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelOption"
+            }
+          }
+        }
       },
       "Command": {
         "type": "object",
@@ -721,6 +774,42 @@
           "assistant"
         ]
       },
+      "ModelOption": {
+        "type": "object",
+        "required": [
+          "id",
+          "reasoningEfforts"
+        ],
+        "properties": {
+          "defaultReasoningEffort": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "reasoningEfforts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReasoningEffort"
+            }
+          }
+        }
+      },
+      "ReasoningEffort": {
+        "type": "string",
+        "enum": [
+          "low",
+          "high",
+          "max"
+        ]
+      },
       "RunAction": {
         "type": "string",
         "enum": [
@@ -800,6 +889,7 @@
       "RunView": {
         "type": "object",
         "required": [
+          "model",
           "id",
           "conversationId",
           "assistantId",
@@ -833,6 +923,15 @@
           },
           "id": {
             "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "reasoningEffort": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "status": {
             "$ref": "#/components/schemas/RunStatusView"

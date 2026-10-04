@@ -74,3 +74,7 @@ Recent commits use `feat: <summary>`, with Chinese summaries. Follow that prefix
 Use `.env.example` as the configuration reference. Server loads optional `.env`; the core reads process variables only. Keep model prefixes, endpoints, and keys compatible. Never commit credentials or generated outputs. The backend is for local development and has no authentication.
 
 Server settings are parsed with envy and injected into infrastructure. Configure Toasty and Apalis pool sizes together; each process consumes both connection budgets. Pool waits are bounded. API DTOs must not expose model history, checkpoint, lease, or configuration internals.
+
+Preserve completed provider reasoning and thought signatures in model checkpoints for subsequent requests. Only displayable reasoning text enters UI parts/SSE; never reconstruct signed model context from UI text. Incomplete reasoning follows the same draft invalidation and generation fencing as answer text.
+
+Model choices come from the server catalog (`MODEL` plus same-provider `CHAT_MODELS`). Validate effort against provider capabilities, persist settings per run, and inherit them across resume/restart/steer. Keep reasoning-first latency separate from answer TTFT. Truncated telemetry content must remain valid JSON; preserve dependency spans while filtering noisy dependency events.

@@ -19,6 +19,7 @@ pub enum AgentEvent {
         max_steps: usize,
     },
     TextDelta(String),
+    ReasoningDelta(String),
     StepFinished {
         step: usize,
     },

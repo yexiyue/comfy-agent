@@ -4,11 +4,23 @@ use opentelemetry::{
     trace::{Status, TracerProvider},
 };
 use opentelemetry_otlp::{WithExportConfig, WithHttpConfig};
-use opentelemetry_sdk::trace::SpanExporter;
+use opentelemetry_sdk::trace::{SpanData, SpanExporter, SpanProcessor};
 use opentelemetry_sdk::{Resource, trace::SdkTracerProvider};
 use std::{sync::Arc, time::Duration};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::{EnvFilter, prelude::*};
+
+/// Preserve all span parents, but discard dependency debug/trace events.
+pub fn trace_metadata(metadata: &tracing::Metadata<'_>) -> bool {
+    metadata.is_span()
+        || *metadata.level() <= tracing::Level::WARN
+        || ["agent", "runtime", "server", "persistence", "telemetry"]
+            .iter()
+            .any(|target| {
+                metadata.target() == *target
+                    || metadata.target().starts_with(&format!("{target}::"))
+            })
+}
 
 pub fn attribute(span: &tracing::Span, key: &'static str, value: impl Into<opentelemetry::Value>) {
     span.set_attribute(key, value);
@@ -124,7 +136,7 @@ pub fn init(config: &Config) -> anyhow::Result<Option<SdkTracerProvider>> {
             .build();
         Some(
             SdkTracerProvider::builder()
-                .with_span_processor(batch)
+                .with_span_processor(OpenInferenceProcessor(batch))
                 .with_resource(
                     Resource::builder()
                         .with_attributes([KeyValue::new("service.name", config.service.clone())])
@@ -135,8 +147,8 @@ pub fn init(config: &Config) -> anyhow::Result<Option<SdkTracerProvider>> {
     } else {
         None
     };
-    // The exporter selects OpenInference spans. Keeping one unfiltered tracing
-    // layer also preserves explicit parents when Axum/Apalis poll outside app spans.
+    // The exporter selects OpenInference spans. Retain dependency spans so explicit
+    // parents survive when Axum/Apalis poll outside app spans; filter only events.
     let layer = provider
         .as_ref()
         .map(|p| tracing_opentelemetry::layer().with_tracer(p.tracer("comfy-agent")));
@@ -146,8 +158,38 @@ pub fn init(config: &Config) -> anyhow::Result<Option<SdkTracerProvider>> {
                 .with_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into())),
         )
         .with(layer)
+        .with(tracing_subscriber::filter::filter_fn(trace_metadata))
         .try_init()?;
     Ok(provider)
+}
+
+#[derive(Debug)]
+pub struct OpenInferenceProcessor<P>(pub P);
+
+impl<P: SpanProcessor> SpanProcessor for OpenInferenceProcessor<P> {
+    fn on_start(&self, span: &mut opentelemetry_sdk::trace::Span, cx: &opentelemetry::Context) {
+        self.0.on_start(span, cx);
+    }
+    fn on_end(&self, span: SpanData) {
+        // Dependency spans retain context locally, but cannot consume the bounded
+        // export queue reserved for the application's OpenInference span tree.
+        if span
+            .attributes
+            .iter()
+            .any(|a| a.key.as_str() == "openinference.span.kind")
+        {
+            self.0.on_end(span);
+        }
+    }
+    fn force_flush(&self) -> opentelemetry_sdk::error::OTelSdkResult {
+        self.0.force_flush()
+    }
+    fn shutdown_with_timeout(&self, timeout: Duration) -> opentelemetry_sdk::error::OTelSdkResult {
+        self.0.shutdown_with_timeout(timeout)
+    }
+    fn set_resource(&mut self, resource: &Resource) {
+        self.0.set_resource(resource);
+    }
 }
 
 #[derive(Debug)]
@@ -277,11 +319,30 @@ impl ContentPolicy {
         let mut text = clean(value).to_string();
         let truncated = text.len() > self.max_bytes;
         if truncated {
-            let mut end = self.max_bytes;
-            while !text.is_char_boundary(end) {
-                end -= 1;
+            // Keep a valid JSON envelope even when the original structured content is cut.
+            let envelope = |end: usize| {
+                serde_json::json!({"truncated":true,"preview":&text[..end]}).to_string()
+            };
+            let mut bounded = if self.max_bytes >= 4 { "null" } else { "0" }.to_owned();
+            let (mut low, mut high) = (0, text.len().min(self.max_bytes));
+            while low <= high {
+                let mid = low + (high - low) / 2;
+                let mut end = mid;
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                let candidate = envelope(end);
+                if candidate.len() <= self.max_bytes {
+                    bounded = candidate;
+                    low = mid + 1;
+                } else {
+                    if mid == 0 {
+                        break;
+                    }
+                    high = mid - 1;
+                }
             }
-            text.truncate(end);
+            text = bounded;
         }
         Some((text, raw_bytes, truncated))
     }

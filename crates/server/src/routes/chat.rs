@@ -15,6 +15,8 @@ use serde::Deserialize;
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Chat {
+    pub model: Option<String>,
+    pub reasoning_effort: Option<crate::api::ReasoningEffort>,
     pub id: String,
     #[schema(value_type = UiMessageView)]
     pub message: UiMessage,
@@ -51,12 +53,18 @@ pub async fn chat(
     if source.is_some_and(|v| v != "eval") {
         return error(StoreError::Invalid("unsupported run source".into()));
     }
+    let (model, reasoning_effort) =
+        match state.chat_config.resolve(body.model, body.reasoning_effort) {
+            Ok(settings) => settings,
+            Err(e) => return error(e),
+        };
     let command = Submit {
         conversation_id: body.id,
         expected_revision: body.expected_revision,
         request_id: body.request_id,
         message: body.message,
-        model: state.model.to_string(),
+        model,
+        reasoning_effort,
         max_steps: state.max_steps,
         tool_schema_hash: state.tool_schema_hash.to_string(),
         evaluation: source == Some("eval"),

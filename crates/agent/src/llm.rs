@@ -3,7 +3,9 @@ use anyhow::bail;
 use futures::StreamExt;
 use genai::{
     Client,
-    chat::{ChatOptions, ChatRequest, ChatStreamEvent, MessageContent, StopReason, Usage},
+    chat::{
+        ChatMessage, ChatOptions, ChatRequest, ChatStreamEvent, MessageContent, StopReason, Usage,
+    },
 };
 use telemetry::attribute;
 use tracing::Instrument;
@@ -20,16 +22,34 @@ pub async fn stream_response(
     request: ChatRequest,
     on_event: &mut (impl FnMut(AgentEvent) + Send),
 ) -> anyhow::Result<ModelResponse> {
+    stream_response_with_effort(client, model, request, None, on_event).await
+}
+
+pub async fn stream_response_with_effort(
+    client: &Client,
+    model: &str,
+    request: ChatRequest,
+    reasoning_effort: Option<&str>,
+    on_event: &mut (impl FnMut(AgentEvent) + Send),
+) -> anyhow::Result<ModelResponse> {
     let span = tracing::info_span!("model");
     attribute(&span, "openinference.span.kind", "LLM");
     attribute(&span, "llm.model_name", model.to_owned());
     telemetry::content_policy().record(&span, "input", &serde_json::to_value(&request)?);
     let started = std::time::Instant::now();
     let result = async {
-        let options = ChatOptions::default()
+        let mut options = ChatOptions::default()
             .with_capture_content(true)
             .with_capture_tool_calls(true)
+            .with_capture_reasoning_content(true)
             .with_capture_usage(true);
+        if let Some(effort) = reasoning_effort {
+            let effort = genai::chat::ReasoningEffort::from_keyword(effort)
+                .ok_or_else(|| anyhow::anyhow!("invalid reasoning effort"))?;
+            attribute(&span, "agent.reasoning_effort", effort.to_string());
+            options = options.with_reasoning_effort(effort);
+        }
+        let mut first_reasoning = false;
         let mut first_text = false;
         let mut response = client
             .exec_chat_stream(model, request, Some(&options))
@@ -46,6 +66,17 @@ pub async fn stream_response(
                         );
                     }
                     on_event(AgentEvent::TextDelta(chunk.content));
+                }
+                ChatStreamEvent::ReasoningChunk(chunk) => {
+                    if !first_reasoning && !chunk.content.is_empty() {
+                        first_reasoning = true;
+                        attribute(
+                            &span,
+                            "agent.model_first_reasoning_ms",
+                            started.elapsed().as_secs_f64() * 1000.0,
+                        );
+                    }
+                    on_event(AgentEvent::ReasoningDelta(chunk.content));
                 }
                 ChatStreamEvent::End(end) => {
                     if let Some(usage) = &end.captured_usage {
@@ -84,9 +115,16 @@ pub async fn stream_response(
                     if let Some(reason) = &end.captured_stop_reason {
                         attribute(&span, "agent.model_stop_reason", format!("{reason:?}"));
                     }
-                    let content = end
+                    let mut content = end
                         .captured_content
                         .ok_or_else(|| anyhow::anyhow!("model stream did not capture content"))?;
+                    // Signed blocks already carry their paired reasoning. Plain reasoning
+                    // is captured separately by other adapters and must also enter history.
+                    if !content.contains_reasoning_content() {
+                        content = ChatMessage::assistant(content)
+                            .with_reasoning_content(end.captured_reasoning_content)
+                            .content;
+                    }
                     telemetry::content_policy().record(
                         &span,
                         "output",

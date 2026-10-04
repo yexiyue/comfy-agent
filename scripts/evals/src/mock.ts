@@ -82,6 +82,7 @@ export async function startMock(otel = false, maxSteps = 6, real = false) {
       ? {}
       : {
           MODEL: 'openai::gpt-4.1',
+          CHAT_MODELS: '',
           OPENAI_API_KEY: 'mock-key',
           API_BASE_URL: `http://127.0.0.1:${address.port}/v1/`,
         };

@@ -224,3 +224,88 @@ async fn zero_steps_rejected_before_model_request() {
     assert!(error.to_string().contains("greater than 0"));
     assert_eq!(history.messages.len(), 1);
 }
+
+#[tokio::test]
+async fn reasoning_is_streamed_and_returned_to_model_across_tools_and_turns() {
+    let tool = stream(
+        json!({"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"double","arguments":"{\"value\":4}"}}]}),
+        "tool_calls",
+    );
+    let reasoning = stream(json!({"reasoning_content":"I should double four."}), "stop");
+    // Keep all chunks in one response, with only one final [DONE].
+    let tool_reply = reasoning.split("\n\n").next().unwrap().to_owned() + "\n\n" + &tool;
+    let answer = stream(json!({"content":"8"}), "stop");
+    let answer_reasoning = stream(
+        json!({"reasoning_content":"The tool returned eight."}),
+        "stop",
+    );
+    let answer_reply = answer_reasoning.split("\n\n").next().unwrap().to_owned() + "\n\n" + &answer;
+    let (client, server) = mock_client(vec![
+        tool_reply,
+        answer_reply,
+        stream(json!({"content":"Still 8"}), "stop"),
+    ])
+    .await;
+    let mut history = ChatRequest::from_user("double 4");
+    let mut registry = ToolRegistry::default();
+    registry.register(DoubleTool).unwrap();
+    let mut events = vec![];
+    run_agent(
+        &client,
+        "openai::gpt-4.1",
+        &mut history,
+        &registry,
+        2,
+        |e| events.push(e),
+    )
+    .await
+    .unwrap();
+    assert!(
+        events.iter().any(
+            |e| matches!(e, AgentEvent::ReasoningDelta(text) if text == "I should double four.")
+        )
+    );
+    history
+        .messages
+        .push(genai::chat::ChatMessage::user("What was the answer?"));
+    run_agent(
+        &client,
+        "openai::gpt-4.1",
+        &mut history,
+        &registry,
+        1,
+        |_| {},
+    )
+    .await
+    .unwrap();
+    let requests = server.await.unwrap();
+    assert_eq!(
+        requests[1]["messages"][1]["reasoning_content"],
+        "I should double four."
+    );
+    assert_eq!(requests[1]["messages"][1]["tool_calls"][0]["id"], "call_1");
+    assert_eq!(
+        requests[2]["messages"][3]["reasoning_content"],
+        "The tool returned eight."
+    );
+    assert_eq!(requests[2]["messages"][3]["content"], "8");
+    // The serialized checkpoint is the durable model context, including reasoning.
+    let restored: ChatRequest =
+        serde_json::from_value(serde_json::to_value(history).unwrap()).unwrap();
+    assert!(restored.messages[1].content.contains_reasoning_content());
+}
+
+#[tokio::test]
+async fn selected_reasoning_effort_is_sent_as_a_provider_parameter() {
+    let (client, server) = mock_client(vec![stream(json!({"content":"answer"}), "stop")]).await;
+    agent::stream_response_with_effort(
+        &client,
+        "openai::gpt-4.1",
+        ChatRequest::from_user("hello"),
+        Some("low"),
+        &mut |_| {},
+    )
+    .await
+    .unwrap();
+    assert_eq!(server.await.unwrap()[0]["reasoning_effort"], "low");
+}

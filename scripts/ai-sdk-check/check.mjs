@@ -29,9 +29,12 @@ async function startMock() {
     count += 1;
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
     if (count === 1) {
+      res.write(modelReply({ reasoning_content: 'I will use addition.' }, null).split('\n\n')[0] + '\n\n');
       res.end(modelReply({ tool_calls: [{ index: 0, id: 'add-1', type: 'function', function: { name: 'add', arguments: '{"a":3,"b":5}' } }] }, 'tool_calls'));
     } else {
+      assert.equal(request.messages.find(message => message.role === 'assistant')?.reasoning_content, 'I will use addition.');
       assert(request.messages.some(message => message.role === 'tool' && message.tool_call_id === 'add-1'), 'model history lost the tool exchange');
+      res.write(modelReply({ reasoning_content: 'The result is eight.' }, null).split('\n\n')[0] + '\n\n');
       res.end(modelReply({ content: count === 2 ? '8' : 'Previous sum was 8.' }, 'stop'));
     }
   });
@@ -52,7 +55,7 @@ async function startMock() {
   const build=spawnSync('cargo',['build','-p','server'],{cwd:root,env,stdio:'inherit',windowsHide:true});assert.equal(build.status,0);
   child = spawn(`${root}/target/debug/server${process.platform==='win32'?'.exe':''}`, [], {
     cwd: root,
-    env: { ...env, SERVER_SHUTDOWN_STDIN:'true', SERVER_ADDR: `127.0.0.1:${port}`, MODEL: 'openai::gpt-4.1', OPENAI_API_KEY: 'mock-key', API_BASE_URL: `http://127.0.0.1:${mock.address().port}/v1/`, AGENT_MAX_STEPS: '6' },
+    env: { ...env, SERVER_SHUTDOWN_STDIN:'true', SERVER_ADDR: `127.0.0.1:${port}`, MODEL: 'openai::gpt-4.1', CHAT_MODELS: '', OPENAI_API_KEY: 'mock-key', API_BASE_URL: `http://127.0.0.1:${mock.address().port}/v1/`, AGENT_MAX_STEPS: '6' },
     stdio: ['pipe', 'inherit', 'inherit'],
     windowsHide: true,
   });
@@ -94,6 +97,7 @@ try {
   const user = { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'Use the add tool to calculate 3 + 5.' }] };
   const assistant = await turn([user]);
   if (mockMode) {
+    assert.deepEqual(assistant.parts.filter(p => p.type === 'reasoning').map(p => [p.text,p.state]), [['I will use addition.','done'],['The result is eight.','done']]);
     const tool = assistant.parts.find(part => part.type === 'tool-add');
     assert.equal(tool?.state, 'output-available');
     assert.deepEqual(tool.output, { sum: 8 });

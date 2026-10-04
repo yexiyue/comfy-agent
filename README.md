@@ -131,6 +131,12 @@ const chat = useChat({ transport });
 
 SSE 使用 [UI Message Stream v1](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol)，保留步骤/文本边界、工具事件与 `[DONE]`，10 秒注释心跳。开始 metadata 包含 runId；完成包含 outcome、steps、runId、attemptId，观测开启时增加 traceId。暂停、取消通过 `data-run-state` 与 `abort` 表达。内存事件队列 128 项、每 run 持久事件默认 16 MiB；保存失败停止执行。请求体 2 MiB、明确来源 CORS 和无鉴权本地开发范围保持不变。
 
+### 思考内容与模型历史
+
+模型提供的可显示思考文本通过 `reasoning-start/delta/end` 传输，前端用 AI Elements Reasoning 按消息顺序展示：生成时展开，结束后折叠，可手动查看。历史快照与 SSE 重放都保留这些内容；是否有思考文本取决于模型和提供商是否输出，不会根据回答伪造思考。
+
+完整模型响应另存于执行 checkpoint，包括 `reasoning_content`、签名与工具调用 ID，并用于后续工具轮次及会话请求。签名等提供商继续执行数据不会暴露给 UI，也不从页面的思考文本重建。暂停时未完成的思考属于草稿，恢复会丢弃这一段并重新调用模型；已完成的模型响应保留。导入 UI 历史仍拒绝无法完整重建的 reasoning parts，避免把无签名的展示内容当作原始模型上下文。
+
 固定 `ai@7.0.127` 的协议门禁和真实数据库测试均只使用免费本地模型：
 
 ```powershell
@@ -183,6 +189,7 @@ pnpm -C apps/web build     # 生产构建（tsc 类型检查 + vite build，产�
 | 变量 | 说明 |
 | --- | --- |
 | `MODEL` | 默认 `bigmodel::glm-4.6`，前缀决定 genai 适配器 |
+| `CHAT_MODELS` | 前端可选的其他模型，逗号分隔；必须与 `MODEL` 使用同一厂商前缀与 endpoint，默认只提供 `MODEL` |
 | `BIGMODEL_API_KEY` | 智谱适配器读取的 API key；其他厂商使用对应的 key 变量 |
 | `API_BASE_URL` | 显式覆盖 API 地址；未设置时 `bigmodel::` 模型使用 Coding Plan 地址，其他模型使用适配器默认地址；设为空时均使用适配器默认地址 |
 | `AGENT_MAX_STEPS` | 每个 run 的逻辑步骤上限，默认 6；恢复重做不重置预算，实际请求次数可更多 |
@@ -191,6 +198,10 @@ pnpm -C apps/web build     # 生产构建（tsc 类型检查 + vite build，产�
 | `RUST_LOG` | 日志过滤器，默认 `server=info,tower_http=info` |
 
 API 地址只覆盖 endpoint，不会自动切换模型适配器或认证方式。请让模型前缀、API 地址与 key 配套。
+
+前端通过 `GET /api/chat/config` 获取可选模型及支持的推理强度，提交新任务时携带 `model` 和 `reasoningEffort`。例如 `CHAT_MODELS=bigmodel::glm-5.3-flash,bigmodel::glm-5.3`。当前 GLM 5.3 系列提供 `low/high/max`，新任务默认 `low`；其他模型沿用提供商默认设置，暂不开放强度选项。名单仅表示管理员允许选择，仍需确保账号和 endpoint 支持这些模型。
+
+模型和强度按任务保存，执行中与暂停时锁定；恢复、重启续跑和追加指令继承原设置。完成后可为下一条新任务重新选择。已有任务未记录强度时继续沿用提供商默认设置。
 
 ## ComfyUI 与文档
 

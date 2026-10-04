@@ -19,6 +19,7 @@ use std::sync::Arc;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 #[derive(Clone)]
 pub struct AppState {
+    pub chat_config: Arc<api::ChatConfig>,
     pub service: Arc<runtime::execution::ExecutionService>,
     pub model: Arc<str>,
     pub max_steps: usize,

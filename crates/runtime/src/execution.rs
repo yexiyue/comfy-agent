@@ -22,7 +22,7 @@ use crate::{
 
 mod driver;
 mod gateway;
-pub use gateway::{GenaiGateway, ModelGateway};
+pub use gateway::{GenaiGateway, ModelDelta, ModelGateway};
 
 #[derive(Clone)]
 pub struct WorkerConfig {
@@ -50,7 +50,8 @@ pub struct ExecutionService {
     pub shutdown: CancellationToken,
     pub changed: Notify,
     pub telemetry: Arc<telemetry::Config>,
-    pub expected_config: Option<(String, String)>,
+    pub expected_tool_schema_hash: Option<String>,
+    pub allowed_models: Option<Vec<String>>,
     dispatch: tracing::Dispatch,
     controls: Mutex<HashMap<String, (i64, CancellationToken)>>,
 }
@@ -80,7 +81,8 @@ impl ExecutionService {
             config,
             shutdown,
             telemetry: Arc::new(telemetry::Config::default()),
-            expected_config: None,
+            expected_tool_schema_hash: None,
+            allowed_models: None,
             dispatch: tracing::dispatcher::get_default(Clone::clone),
             changed: Notify::new(),
             controls: Mutex::new(HashMap::new()),

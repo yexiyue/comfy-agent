@@ -100,6 +100,7 @@ fn subscription(
             for event in batch {
                 after = event.sequence;
                 boundary.observe(&event.payload);
+                if event.payload["type"] == "reasoning-delta" { metrics.first_reasoning(); }
                 if event.payload["type"] == "text-delta" {
                     metrics.first_text();
                 }
@@ -149,7 +150,7 @@ fn subscription(
 #[derive(Default)]
 struct StreamBoundary {
     open_step: bool,
-    open_texts: std::collections::HashSet<String>,
+    open_blocks: std::collections::BTreeMap<String, String>,
     finished: bool,
     error_seen: bool,
 }
@@ -159,14 +160,22 @@ impl StreamBoundary {
         match payload["type"].as_str().unwrap_or_default() {
             "start-step" => self.open_step = true,
             "finish-step" => self.open_step = false,
-            "text-start" => {
+            "text-start" | "reasoning-start" => {
                 if let Some(id) = payload["id"].as_str() {
-                    self.open_texts.insert(id.to_owned());
+                    self.open_blocks.insert(
+                        id.to_owned(),
+                        if payload["type"] == "reasoning-start" {
+                            "reasoning-end"
+                        } else {
+                            "text-end"
+                        }
+                        .into(),
+                    );
                 }
             }
-            "text-end" => {
+            "text-end" | "reasoning-end" => {
                 if let Some(id) = payload["id"].as_str() {
-                    self.open_texts.remove(id);
+                    self.open_blocks.remove(id);
                 }
             }
             "finish" => self.finished = true,
@@ -176,10 +185,9 @@ impl StreamBoundary {
     }
 
     fn close_blocks(&mut self) -> Vec<serde_json::Value> {
-        let mut events: Vec<_> = self
-            .open_texts
-            .drain()
-            .map(|id| json!({"type": "text-end", "id": id}))
+        let mut events: Vec<_> = std::mem::take(&mut self.open_blocks)
+            .into_iter()
+            .map(|(id, kind)| json!({"type": kind, "id": id}))
             .collect();
         if std::mem::take(&mut self.open_step) {
             events.push(json!({"type": "finish-step"}));
@@ -192,6 +200,7 @@ struct SubscriptionMetrics {
     span: tracing::Span,
     started: std::time::Instant,
     first: std::cell::Cell<bool>,
+    reasoning: std::cell::Cell<bool>,
 }
 impl SubscriptionMetrics {
     fn new(run: &Run, config: &telemetry::Config) -> Self {
@@ -211,6 +220,16 @@ impl SubscriptionMetrics {
             span,
             started: std::time::Instant::now(),
             first: std::cell::Cell::new(false),
+            reasoning: std::cell::Cell::new(false),
+        }
+    }
+    fn first_reasoning(&self) {
+        if !self.reasoning.replace(true) {
+            telemetry::attribute(
+                &self.span,
+                "agent.subscription_first_reasoning_ms",
+                self.started.elapsed().as_millis() as i64,
+            );
         }
     }
     fn first_text(&self) {
@@ -230,5 +249,27 @@ impl Drop for SubscriptionMetrics {
             "agent.subscription_ms",
             self.started.elapsed().as_millis() as i64,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detach_closes_reasoning_before_step_without_duplicate_end() {
+        let mut boundary = StreamBoundary::default();
+        boundary.observe(&json!({"type":"start-step"}));
+        boundary.observe(&json!({"type":"text-start","id":"answer"}));
+        boundary.observe(&json!({"type":"text-end","id":"answer"}));
+        boundary.observe(&json!({"type":"reasoning-start","id":"thinking"}));
+        assert_eq!(
+            boundary.close_blocks(),
+            vec![
+                json!({"type":"reasoning-end","id":"thinking"}),
+                json!({"type":"finish-step"}),
+            ]
+        );
+        assert!(boundary.close_blocks().is_empty());
     }
 }

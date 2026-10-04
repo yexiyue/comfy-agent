@@ -46,6 +46,7 @@ fn submit(conversation: &Conversation) -> Submit {
             metadata: None,
         },
         model: "mock-model".into(),
+        reasoning_effort: Some("high".into()),
         max_steps: 3,
         tool_schema_hash: "mock-schema".into(),
         evaluation: false,

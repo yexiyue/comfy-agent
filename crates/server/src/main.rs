@@ -17,6 +17,10 @@ async fn main() -> anyhow::Result<()> {
     let provider = telemetry::init(&telemetry_config)?;
     let config = AgentConfig::from_env()?;
     let settings = server::config::ServerConfig::from_env()?;
+    let chat_config = Arc::new(server::api::ChatConfig::new(
+        &config.model,
+        &settings.chat_models,
+    )?);
     let address = settings.server_addr;
     let origins = settings.origins()?;
     let shutdown = CancellationToken::new();
@@ -45,7 +49,14 @@ async fn main() -> anyhow::Result<()> {
         "{:x}",
         Sha256::digest(serde_json::to_vec(&service.registry.definitions())?)
     );
-    service.expected_config = Some((config.model.clone(), tool_schema_hash.clone()));
+    service.expected_tool_schema_hash = Some(tool_schema_hash.clone());
+    service.allowed_models = Some(
+        chat_config
+            .models
+            .iter()
+            .map(|model| model.id.clone())
+            .collect(),
+    );
     let service = Arc::new(service);
     let queue = persistence::queue::QueueRuntime::open(
         database_url,
@@ -58,6 +69,7 @@ async fn main() -> anyhow::Result<()> {
         anyhow::anyhow!("queue initialization failed; verify database and Apalis migrations")
     })?;
     let state = AppState {
+        chat_config,
         service: service.clone(),
         model: config.model.into(),
         max_steps: config.max_steps,
@@ -87,22 +99,25 @@ async fn main() -> anyhow::Result<()> {
         result
     };
     // Poll worker/server in the same runtime without imposing additional Send bounds on Apalis.
-    let work = async {
-        let (http, worker) = tokio::join!(server, execution);
-        http?;
-        worker?;
-        Ok::<_, anyhow::Error>(())
+    let result = {
+        let work = async move {
+            let (http, worker) = tokio::join!(server, execution);
+            http?;
+            worker?;
+            Ok::<_, anyhow::Error>(())
+        };
+        tokio::pin!(work);
+        tokio::pin!(signals);
+        tokio::select! { result=&mut work=>result,_=&mut signals=>{
+            match tokio::time::timeout(std::time::Duration::from_secs(10),&mut work).await {
+                Ok(result)=>result,Err(_)=>{tracing::warn!("shutdown grace expired; outstanding leases will recover after expiry");Ok(())}
+            }
+        }}
     };
-    tokio::pin!(work);
-    tokio::pin!(signals);
-    let result = tokio::select! { result=&mut work=>result,_=&mut signals=>{
-        match tokio::time::timeout(std::time::Duration::from_secs(10),&mut work).await {
-            Ok(result)=>result,Err(_)=>{tracing::warn!("shutdown grace expired; outstanding leases will recover after expiry");Ok(())}
-        }
-    }};
-    result?;
+    // Worker/HTTP futures can retain span handles after completion. Drop them
+    // before shutting down the exporter so the final task's spans are flushed.
     telemetry::shutdown(provider).await;
-    Ok(())
+    result
 }
 
 async fn shutdown_signal() -> std::io::Result<()> {

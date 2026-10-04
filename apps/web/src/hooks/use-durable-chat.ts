@@ -18,6 +18,7 @@ import {
 import type { ConversationView, RunAction } from '@/api/generated/types.gen'
 import { CHAT_ENDPOINT } from '@/api/client'
 import type { ChatUIMessage } from '@/lib/chat'
+import { useChatSettings } from '@/hooks/use-chat-settings'
 import { SessionRequests } from '@/lib/session-requests'
 import {
   isRunning,
@@ -32,9 +33,10 @@ async function snapshotFrom(
 ): Promise<Snapshot<ChatUIMessage>> {
   return {
     ...view,
-    messages: await validateUIMessages<ChatUIMessage>({
-      messages: view.messages,
-    }),
+    // Empty persisted conversations are valid; the SDK validates nonempty histories only.
+    messages: view.messages.length === 0
+      ? []
+      : await validateUIMessages<ChatUIMessage>({ messages: view.messages }),
   }
 }
 const errorText = (error: unknown) =>
@@ -44,6 +46,9 @@ export function useDurableChat() {
   const queryClient = useQueryClient()
   const [snapshot, setSnapshot] = useState<Snapshot<ChatUIMessage> | null>(null)
   const [run, setRun] = useState<Run | null>(null)
+  const settings = useChatSettings(run)
+  const settingsRef = useRef(settings.settings)
+  useLayoutEffect(() => { settingsRef.current = settings.settings }, [settings.settings])
   const [loading, setLoading] = useState(false)
   const [operating, setOperating] = useState(false)
   const [failure, setFailure] = useState<string | null>(null)
@@ -82,7 +87,7 @@ export function useDurableChat() {
       new DefaultChatTransport<ChatUIMessage>({
         api: CHAT_ENDPOINT,
         prepareSendMessagesRequest: ({ messages }) => ({
-          body: submission(snapshotRef.current, messages, crypto.randomUUID()),
+          body: { ...submission(snapshotRef.current, messages, crypto.randomUUID()), ...settingsRef.current },
         }),
         prepareReconnectToStreamRequest: () => {
           if (!runRef.current) throw Error('没有可重连的任务')
@@ -252,13 +257,14 @@ export function useDurableChat() {
   const sessions = snapshot
     ? [snapshot, ...(list.data ?? []).filter((item) => item.id !== snapshot.id)]
     : (list.data ?? [])
-  const queryError = runQuery.error ?? list.error
+  const queryError = runQuery.error ?? list.error ?? settings.error
   return {
     chat,
+    settings,
     snapshot,
     run,
     sessions,
-    operation: loading || operating || creating || controlling,
+    operation: loading || operating || creating || controlling || settings.loading,
     failure: failure ?? (queryError ? errorText(queryError) : null),
     load,
     control,

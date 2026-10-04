@@ -4,7 +4,7 @@ pub mod config;
 mod llm;
 pub mod phase;
 pub mod tool_registry;
-pub use llm::{ModelResponse, stream_response};
+pub use llm::{ModelResponse, stream_response, stream_response_with_effort};
 pub use phase::Checkpoint;
 
 pub use agent::{AgentEvent, AgentOutcome, run_agent};

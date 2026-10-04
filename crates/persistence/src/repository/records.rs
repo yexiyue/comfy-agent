@@ -196,6 +196,7 @@ pub(super) fn make_run(
         checkpoint: Checkpoint::new(conversation.history.clone(), command.max_steps)
             .map_err(|error| StoreError::Invalid(error.to_string()))?,
         model: command.model.clone(),
+        reasoning_effort: command.reasoning_effort.clone(),
         tool_schema_hash: command.tool_schema_hash.clone(),
         supersedes,
         recoveries: 0,

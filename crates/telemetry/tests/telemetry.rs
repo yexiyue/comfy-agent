@@ -42,6 +42,83 @@ fn content_is_opt_in_redacted_and_utf8_bounded() {
     .sanitize(&json!("你好你好"))
     .unwrap();
     assert!(truncated && text.len() <= 5);
+    serde_json::from_str::<serde_json::Value>(&text).unwrap();
+    let (text, _, truncated) = ContentPolicy {
+        enabled: true,
+        max_bytes: 96,
+    }
+    .sanitize(&json!({"text":"你好\"\\\n".repeat(100), "password":"private"}))
+    .unwrap();
+    assert!(truncated && text.len() <= 96 && !text.contains("private"));
+    let envelope: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(envelope["truncated"], true);
+}
+
+#[test]
+fn dependency_spans_cannot_fill_the_business_export_queue() {
+    use opentelemetry::{KeyValue, trace::Tracer};
+    use opentelemetry_sdk::trace::{BatchConfigBuilder, BatchSpanProcessor};
+    let exporter = InMemorySpanExporter::default();
+    let batch = BatchSpanProcessor::builder(exporter.clone())
+        .with_batch_config(
+            BatchConfigBuilder::default()
+                .with_max_queue_size(8)
+                .with_max_export_batch_size(8)
+                .with_scheduled_delay(std::time::Duration::from_secs(60))
+                .build(),
+        )
+        .build();
+    let provider = SdkTracerProvider::builder()
+        .with_span_processor(telemetry::OpenInferenceProcessor(batch))
+        .build();
+    let tracer = provider.tracer("queue-test");
+    for _ in 0..4096 {
+        tracer.start("dependency").end();
+    }
+    let mut root = tracer.start("agent.run");
+    root.set_attribute(KeyValue::new("openinference.span.kind", "AGENT"));
+    root.end();
+    provider.force_flush().unwrap();
+    let spans = exporter.get_finished_spans().unwrap();
+    assert_eq!(spans.len(), 1);
+    assert_eq!(spans[0].name, "agent.run");
+    provider.shutdown().unwrap();
+}
+
+#[test]
+fn trace_filter_preserves_dependency_parents_and_errors_without_debug_noise() {
+    let exporter = InMemorySpanExporter::default();
+    let provider = SdkTracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    let subscriber = tracing_subscriber::registry()
+        .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("filter-test")))
+        .with(tracing_subscriber::filter::filter_fn(
+            telemetry::trace_metadata,
+        ));
+    tracing::subscriber::with_default(subscriber, || {
+        let parent = tracing::debug_span!(target:"dependency", "parent");
+        let _entered = parent.enter();
+        let child = tracing::info_span!(target:"agent", "model");
+        telemetry::attribute(&child, "openinference.span.kind", "LLM");
+        let _child = child.enter();
+        tracing::debug!(target:"h2::recv", "dependency noise");
+        tracing::info!(target:"agent", "business event");
+        tracing::warn!(target:"h2::recv", "dependency warning");
+    });
+    provider.force_flush().unwrap();
+    let spans = exporter.get_finished_spans().unwrap();
+    let parent = spans.iter().find(|s| s.name == "parent").unwrap();
+    let child = spans.iter().find(|s| s.name == "model").unwrap();
+    assert_eq!(child.parent_span_id, parent.span_context.span_id());
+    assert!(
+        child
+            .attributes
+            .iter()
+            .any(|a| a.key.as_str() == "openinference.span.kind")
+    );
+    assert_eq!(child.events.len(), 2);
+    assert!(child.events.iter().all(|e| e.name != "dependency noise"));
 }
 
 #[test]

@@ -6,6 +6,7 @@ use anyhow::Result;
 use opentelemetry::trace::TraceContextExt;
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 mod model;
@@ -43,15 +44,23 @@ impl ExecutionService {
             attempt.trace_id = Some(context.span().span_context().trace_id().to_string());
         }
         if self
-            .expected_config
+            .expected_tool_schema_hash
             .as_ref()
-            .is_some_and(|(model, hash)| model != &run.model || hash != &run.tool_schema_hash)
+            .is_some_and(|hash| hash != &run.tool_schema_hash)
+            || self
+                .allowed_models
+                .as_ref()
+                .is_some_and(|models| !models.contains(&run.model))
         {
             run.status = RunStatus::NeedsAttention;
             run.error = Some("model or tool schema changed; execution requires attention".into());
             attempt.outcome = Some("needs-attention".into());
             self.commit(run, &attempt, vec![], vec![]).await?;
             return Ok(());
+        }
+        telemetry::attribute(&run_span, "agent.model", run.model.clone());
+        if let Some(effort) = &run.reasoning_effort {
+            telemetry::attribute(&run_span, "agent.reasoning_effort", effort.clone());
         }
         let mut timing = ExecutionTiming::new(run_span);
         let mut step_spans = HashMap::new();
@@ -61,19 +70,23 @@ impl ExecutionService {
                 Action::Model { step } => *step,
                 _ => run.checkpoint.step,
             };
-            let step_span = step_spans
-                .entry(step)
-                .or_insert_with(|| {
-                    let span = tracing::info_span!("step", step);
-                    telemetry::attribute(&span, "openinference.span.kind", "CHAIN");
-                    telemetry::attribute(&span, "agent.step", step as i64);
-                    span
-                })
-                .clone();
+            let step_span = matches!(&action, Action::Model { .. } | Action::Tool(_)).then(|| {
+                step_spans
+                    .entry(step)
+                    .or_insert_with(|| {
+                        let span = tracing::info_span!("step", step);
+                        telemetry::attribute(&span, "openinference.span.kind", "CHAIN");
+                        telemetry::attribute(&span, "agent.step", step as i64);
+                        span
+                    })
+                    .clone()
+            });
             match action {
                 Action::Model { step } => {
+                    let step_span = step_span.unwrap();
                     let Some(next) = self
-                        .model_step(run, &mut attempt, step, step_span, &mut timing)
+                        .model_step(run, &mut attempt, step, step_span.clone(), &mut timing)
+                        .instrument(step_span)
                         .await?
                     else {
                         return Ok(());
@@ -81,7 +94,11 @@ impl ExecutionService {
                     run = next;
                 }
                 Action::Tool(call) => {
-                    let Some(next) = self.tool_step(run, &mut attempt, call, step_span).await?
+                    let step_span = step_span.unwrap();
+                    let Some(next) = self
+                        .tool_step(run, &mut attempt, call, step_span.clone())
+                        .instrument(step_span)
+                        .await?
                     else {
                         return Ok(());
                     };
@@ -90,7 +107,14 @@ impl ExecutionService {
                 Action::StepComplete { .. } => {
                     run.checkpoint.step_completed()?;
                     let events = vec![event(&run, json!({"type":"finish-step"}), false)];
-                    run = self.commit(run, &attempt, events, vec![]).await?;
+                    let span = step_spans
+                        .get(&step)
+                        .cloned()
+                        .unwrap_or_else(tracing::Span::none);
+                    run = self
+                        .commit(run, &attempt, events, vec![])
+                        .instrument(span)
+                        .await?;
                     step_spans.remove(&step);
                 }
                 Action::Finished { steps, .. } | Action::StepLimit { steps } => {
@@ -120,27 +144,6 @@ impl ExecutionService {
             }
         }
     }
-
-    async fn text(&self, run: &Run, id: &str, started: &mut bool, text: String) -> Result<()> {
-        if text.is_empty() {
-            return Ok(());
-        }
-        let mut events = vec![];
-        if !*started {
-            events.push(event(run, json!({"type":"text-start","id":id}), true));
-            *started = true;
-        }
-        events.push(event(
-            run,
-            json!({"type":"text-delta","id":id,"delta":text}),
-            true,
-        ));
-        self.store
-            .append(&run.id, run.generation, events, self.config.max_event_bytes)
-            .await?;
-        self.changed.notify_waiters();
-        Ok(())
-    }
 }
 
 fn event(run: &Run, payload: Value, draft: bool) -> ProgressEvent {
@@ -157,6 +160,7 @@ struct ExecutionTiming {
     span: tracing::Span,
     started: std::time::Instant,
     first_text: bool,
+    first_reasoning: bool,
 }
 
 impl ExecutionTiming {
@@ -165,6 +169,18 @@ impl ExecutionTiming {
             span,
             started: std::time::Instant::now(),
             first_text: false,
+            first_reasoning: false,
+        }
+    }
+
+    fn record_reasoning(&mut self, text: &str) {
+        if !text.is_empty() && !self.first_reasoning {
+            self.first_reasoning = true;
+            telemetry::attribute(
+                &self.span,
+                "agent.execution_first_reasoning_ms",
+                self.started.elapsed().as_millis() as i64,
+            );
         }
     }
 

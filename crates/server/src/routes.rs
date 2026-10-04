@@ -1,6 +1,7 @@
 //! HTTP endpoints grouped by the resource they operate on.
 mod chat;
 mod conversations;
+mod models;
 mod response;
 mod runs;
 
@@ -14,6 +15,7 @@ pub(crate) fn router() -> utoipa_axum::router::OpenApiRouter<crate::AppState> {
     use utoipa::OpenApi;
     OpenApiRouter::with_openapi(ApiDoc::openapi())
         .routes(routes!(chat::chat))
+        .routes(routes!(models::config))
         .routes(routes!(conversations::create, conversations::list))
         .routes(routes!(conversations::snapshot))
         .routes(routes!(conversations::receipt))

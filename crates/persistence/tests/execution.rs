@@ -4,7 +4,7 @@ use futures::future::BoxFuture;
 use genai::chat::{ChatRequest, MessageContent, ToolCall};
 use persistence::{migration, queue::QueueRuntime, repository::PostgresStore};
 use runtime::{
-    execution::{ExecutionService, ModelGateway, WorkerConfig},
+    execution::{ExecutionService, ModelDelta, ModelGateway, WorkerConfig},
     model::*,
     store::ConversationStore,
 };
@@ -27,9 +27,11 @@ impl ModelGateway for MockModel {
         &'a self,
         _model: &'a str,
         request: ChatRequest,
-        on_text: &'a mut (dyn FnMut(String) + Send),
+        reasoning_effort: Option<&'a str>,
+        on_text: &'a mut (dyn FnMut(ModelDelta) + Send),
     ) -> BoxFuture<'a, Result<ModelResponse>> {
         Box::pin(async move {
+            assert_eq!(reasoning_effort, Some("high"));
             let call = self.0.fetch_add(1, Ordering::SeqCst);
             let content = if call == 0 {
                 MessageContent::from_tool_calls(
@@ -50,7 +52,7 @@ impl ModelGateway for MockModel {
                         && encoded.contains("call-second")
                         && encoded.contains("retained")
                 );
-                on_text("completed".into());
+                on_text(ModelDelta::Text("completed".into()));
                 MessageContent::from_text("completed")
             };
             Ok(ModelResponse {
@@ -152,6 +154,7 @@ async fn setup(
                 metadata: None,
             },
             model: "mock".into(),
+            reasoning_effort: Some("high".into()),
             max_steps: 2,
             tool_schema_hash: "mock".into(),
             evaluation: false,
@@ -386,12 +389,13 @@ impl ModelGateway for InterruptModel {
         &'a self,
         _model: &'a str,
         _request: ChatRequest,
-        text: &'a mut (dyn FnMut(String) + Send),
+        _reasoning_effort: Option<&'a str>,
+        text: &'a mut (dyn FnMut(ModelDelta) + Send),
     ) -> BoxFuture<'a, Result<ModelResponse>> {
         Box::pin(async move {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             if call < self.interrupts {
-                text(format!("abandoned-{call}"));
+                text(ModelDelta::Reasoning(format!("abandoned-{call}")));
                 self.started.notify_one();
                 std::future::pending::<()>().await;
             }
@@ -404,7 +408,7 @@ impl ModelGateway for InterruptModel {
                     thought_signatures: None,
                 }),
             ]);
-            text("fresh".into());
+            text(ModelDelta::Text("fresh".into()));
             Ok(ModelResponse {
                 content,
                 usage: None,

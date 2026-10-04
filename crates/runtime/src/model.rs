@@ -63,6 +63,8 @@ pub struct Run {
     pub attempt_id: Option<String>,
     pub checkpoint: Checkpoint,
     pub model: String,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
     pub tool_schema_hash: String,
     pub supersedes: Option<String>,
     pub recoveries: usize,
@@ -136,6 +138,8 @@ pub struct Submit {
     pub request_id: String,
     pub message: UiMessage,
     pub model: String,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
     pub max_steps: usize,
     pub tool_schema_hash: String,
     #[serde(default)]

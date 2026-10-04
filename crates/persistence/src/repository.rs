@@ -275,6 +275,7 @@ impl ConversationStore for PostgresStore {
                         request_id: command.request_id.clone(),
                         message: new_message.clone(),
                         model: run.model.clone(),
+                        reasoning_effort: run.reasoning_effort.clone(),
                         max_steps: run.checkpoint.max_steps,
                         tool_schema_hash: run.tool_schema_hash.clone(),
                         evaluation: run.evaluation,

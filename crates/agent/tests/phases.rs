@@ -1,5 +1,5 @@
 use agent::{Checkpoint, phase::Action};
-use genai::chat::{ChatRequest, MessageContent, ToolCall};
+use genai::chat::{ChatRequest, ContentPart, MessageContent, ToolCall};
 use serde_json::json;
 
 fn call(id: &str) -> ToolCall {
@@ -16,9 +16,11 @@ fn complete_model_and_each_tool_are_separate_checkpoints() {
     let mut state = Checkpoint::new(ChatRequest::from_user("calculate"), 2).unwrap();
     state.begin_model().unwrap();
     state
-        .model_completed(MessageContent::from_tool_calls(vec![
-            call("first"),
-            call("second"),
+        .model_completed(MessageContent::from_parts(vec![
+            ContentPart::ThoughtSignature("signed-block".into()),
+            ContentPart::ReasoningContent("Use both tools.".into()),
+            ContentPart::ToolCall(call("first")),
+            ContentPart::ToolCall(call("second")),
         ]))
         .unwrap();
     let model = Checkpoint::decode(serde_json::to_value(&state).unwrap()).unwrap();
@@ -33,6 +35,10 @@ fn complete_model_and_each_tool_are_separate_checkpoints() {
         .unwrap();
     assert!(matches!(restored.next(), Action::StepComplete { step: 1 }));
     restored.step_completed().unwrap();
+    assert_eq!(
+        serde_json::to_value(&restored.history.messages[1].content).unwrap(),
+        serde_json::to_value(&model.history.messages[1].content).unwrap()
+    );
     assert!(matches!(restored.next(), Action::Model { step: 2 }));
     restored.begin_model().unwrap();
     restored

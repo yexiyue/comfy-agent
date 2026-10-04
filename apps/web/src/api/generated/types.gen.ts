@@ -24,8 +24,15 @@ export type Chat = {
     expectedRevision: number;
     id: string;
     message: UiMessageView;
+    model?: string | null;
+    reasoningEffort?: ReasoningEffort | null;
     requestId: string;
     trigger?: string | null;
+};
+
+export type ChatConfig = {
+    defaultModel: string;
+    models: Array<ModelOption>;
 };
 
 export type Command = {
@@ -58,6 +65,14 @@ export type Health = {
 
 export type MessageRole = 'system' | 'user' | 'assistant';
 
+export type ModelOption = {
+    defaultReasoningEffort?: ReasoningEffort | null;
+    id: string;
+    reasoningEfforts: Array<ReasoningEffort>;
+};
+
+export type ReasoningEffort = 'low' | 'high' | 'max';
+
 export type RunAction = 'pause' | 'resume' | 'cancel' | 'steer';
 
 export type RunDetail = RunView & {
@@ -81,6 +96,8 @@ export type RunView = {
     error?: string | null;
     generation: number;
     id: string;
+    model: string;
+    reasoningEffort?: string | null;
     status: RunStatusView;
     steps: number;
     supersedes?: string | null;
@@ -122,6 +139,19 @@ export type SubmitChatResponses = {
 };
 
 export type SubmitChatResponse = SubmitChatResponses[keyof SubmitChatResponses];
+
+export type GetChatConfigData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/chat/config';
+};
+
+export type GetChatConfigResponses = {
+    200: ChatConfig;
+};
+
+export type GetChatConfigResponse = GetChatConfigResponses[keyof GetChatConfigResponses];
 
 export type ReconnectChatData = {
     body?: never;

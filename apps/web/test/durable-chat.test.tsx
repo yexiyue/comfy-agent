@@ -32,6 +32,8 @@ const conversation = (
 })
 const run = (id: string, conversationId: string): RunDetail => ({
   id,
+  model: 'mock',
+  reasoningEffort: null,
   conversationId,
   assistantId: `${id}-assistant`,
   status: 'paused',
@@ -92,6 +94,7 @@ describe('durable chat with generated queries', () => {
         const url = new URL(
           request instanceof Request ? request.url : String(request),
         )
+        if (url.pathname === '/api/chat/config') return response({ defaultModel: 'mock', models: [{ id: 'mock', reasoningEfforts: [], defaultReasoningEffort: null }] })
         const method = request instanceof Request ? request.method : 'GET'
         if (url.pathname === '/api/conversations')
           return response([
@@ -140,8 +143,9 @@ describe('durable chat with generated queries', () => {
   it('keeps a newly created conversation visible while the list is stale', async () => {
     client.setConfig({
       fetch: vi.fn(async (request: RequestInfo | URL) => {
+        if (new URL((request as Request).url).pathname === '/api/chat/config') return response({ defaultModel: 'mock', models: [{ id: 'mock', reasoningEfforts: [], defaultReasoningEffort: null }] })
         const req = request as Request
-        if (req.method === 'POST') return response(conversation('new'))
+        if (req.method === 'POST') return response({ ...conversation('new'), messages: [] })
         if (new URL(req.url).pathname === '/api/conversations/A')
           return response(conversation('A'))
         return response([conversation('A')])
@@ -153,15 +157,55 @@ describe('durable chat with generated queries', () => {
       await hook.result.current.load()
     })
     expect(hook.result.current.snapshot?.id).toBe('new')
+    expect(hook.result.current.failure).toBeNull()
+    expect(hook.result.current.snapshot?.messages).toEqual([])
+    expect(chat.setMessages).toHaveBeenLastCalledWith([])
     expect(hook.result.current.sessions.map((item) => item.id)).toEqual([
       'new',
       'A',
     ])
   })
 
+  it('opens an existing empty conversation and can switch to populated history', async () => {
+    client.setConfig({
+      fetch: vi.fn(async (request: RequestInfo | URL) => {
+        const path = new URL((request as Request).url).pathname
+        if (path === '/api/chat/config') return response({ defaultModel: 'mock', models: [{ id: 'mock', reasoningEfforts: [], defaultReasoningEffort: null }] })
+        if (path === '/api/conversations/A') return response({ ...conversation('A'), messages: [] })
+        if (path === '/api/conversations/B') return response(conversation('B'))
+        return response([conversation('A'), conversation('B')])
+      }),
+    })
+    const hook = render()
+    await waitFor(() => expect(hook.result.current.snapshot?.id).toBe('A'))
+    expect(hook.result.current.failure).toBeNull()
+    expect(chat.setMessages).toHaveBeenLastCalledWith([])
+    await act(async () => { await hook.result.current.load('B') })
+    expect(chat.setMessages).toHaveBeenLastCalledWith(conversation('B').messages)
+    expect(hook.result.current.failure).toBeNull()
+  })
+
+  it('still rejects malformed nonempty history', async () => {
+    client.setConfig({
+      fetch: vi.fn(async (request: RequestInfo | URL) => {
+        const path = new URL((request as Request).url).pathname
+        if (path === '/api/chat/config') return response({ defaultModel: 'mock', models: [{ id: 'mock', reasoningEfforts: [], defaultReasoningEffort: null }] })
+        if (path === '/api/conversations/A') return response({
+          ...conversation('A'), messages: [{ id: 'bad', role: 'user', parts: [{ type: 'text', text: 123 }] }],
+        })
+        return response([conversation('A')])
+      }),
+    })
+    const hook = render()
+    await waitFor(() => expect(hook.result.current.failure).not.toBeNull())
+    expect(hook.result.current.snapshot).toBeNull()
+    expect(chat.setMessages).not.toHaveBeenCalled()
+  })
+
   it('replays SDK-validated messages and surfaces a generated-client conflict', async () => {
     client.setConfig({
       fetch: vi.fn(async (request: RequestInfo | URL) => {
+        if (new URL((request as Request).url).pathname === '/api/chat/config') return response({ defaultModel: 'mock', models: [{ id: 'mock', reasoningEfforts: [], defaultReasoningEffort: null }] })
         const req = request as Request
         const path = new URL(req.url).pathname
         if (req.method === 'POST')

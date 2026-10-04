@@ -8,6 +8,7 @@ use std::{net::SocketAddr, time::Duration};
 #[derive(Deserialize)]
 #[serde(default)]
 pub struct ServerConfig {
+    pub chat_models: String,
     pub database_url: String,
     pub server_addr: SocketAddr,
     pub cors_allowed_origins: String,
@@ -26,6 +27,7 @@ pub struct ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
+            chat_models: String::new(),
             database_url: String::new(),
             server_addr: ([127, 0, 0, 1], 3001).into(),
             cors_allowed_origins: "http://localhost:3000,http://localhost:5173".into(),

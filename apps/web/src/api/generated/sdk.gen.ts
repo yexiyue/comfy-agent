@@ -2,7 +2,7 @@
 
 import { client } from './client.gen.js';
 import type { Client, ClientMeta, Options as Options2, RequestResult, ServerSentEventsResult, TDataShape } from './client/index.js';
-import type { ControlRunData, ControlRunErrors, ControlRunResponses, CreateConversationData, CreateConversationErrors, CreateConversationResponses, GetCommandResultData, GetCommandResultErrors, GetCommandResultResponses, GetConversationData, GetConversationErrors, GetConversationResponses, GetHealthData, GetHealthResponses, GetRunData, GetRunErrors, GetRunResponses, ListConversationsData, ListConversationsErrors, ListConversationsResponses, ReconnectChatData, ReconnectChatErrors, ReconnectChatResponse, ReconnectChatResponses, SubmitChatData, SubmitChatErrors, SubmitChatResponse, SubmitChatResponses } from './types.gen.js';
+import type { ControlRunData, ControlRunErrors, ControlRunResponses, CreateConversationData, CreateConversationErrors, CreateConversationResponses, GetChatConfigData, GetChatConfigResponses, GetCommandResultData, GetCommandResultErrors, GetCommandResultResponses, GetConversationData, GetConversationErrors, GetConversationResponses, GetHealthData, GetHealthResponses, GetRunData, GetRunErrors, GetRunResponses, ListConversationsData, ListConversationsErrors, ListConversationsResponses, ReconnectChatData, ReconnectChatErrors, ReconnectChatResponse, ReconnectChatResponses, SubmitChatData, SubmitChatErrors, SubmitChatResponse, SubmitChatResponses } from './types.gen.js';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -26,6 +26,8 @@ export const submitChat = <ThrowOnError extends boolean = false>(options: Option
         ...options.headers
     }
 });
+
+export const getChatConfig = <ThrowOnError extends boolean = false>(options?: Options<GetChatConfigData, ThrowOnError>): RequestResult<GetChatConfigResponses, unknown, ThrowOnError> => (options?.client ?? client).get<GetChatConfigResponses, unknown, ThrowOnError>({ url: '/api/chat/config', ...options });
 
 export const reconnectChat = <ThrowOnError extends boolean = false>(options: Options<ReconnectChatData, ThrowOnError, ReconnectChatResponse>): Promise<ServerSentEventsResult<ReconnectChatResponses>> => (options.client ?? client).sse.get<ReconnectChatResponses, ReconnectChatErrors, ThrowOnError>({ url: '/api/chat/{id}/stream', ...options });
 

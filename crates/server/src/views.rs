@@ -41,6 +41,8 @@ impl From<RunStatus> for RunStatusView {
 }
 pub(crate) fn public_run(run: &Run) -> RunView {
     RunView {
+        model: run.model.clone(),
+        reasoning_effort: run.reasoning_effort.clone(),
         id: run.id.clone(),
         conversation_id: run.conversation_id.clone(),
         assistant_id: run.assistant_id.clone(),

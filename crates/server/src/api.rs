@@ -3,6 +3,36 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    Low,
+    High,
+    Max,
+}
+impl ReasoningEffort {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::High => "high",
+            Self::Max => "max",
+        }
+    }
+}
+#[derive(Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelOption {
+    pub id: String,
+    pub reasoning_efforts: Vec<ReasoningEffort>,
+    pub default_reasoning_effort: Option<ReasoningEffort>,
+}
+#[derive(Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatConfig {
+    pub default_model: String,
+    pub models: Vec<ModelOption>,
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct ApiError {
     pub error: String,
@@ -56,6 +86,8 @@ pub enum RunStatusView {
 #[derive(Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RunView {
+    pub model: String,
+    pub reasoning_effort: Option<String>,
     pub id: String,
     pub conversation_id: String,
     pub assistant_id: String,

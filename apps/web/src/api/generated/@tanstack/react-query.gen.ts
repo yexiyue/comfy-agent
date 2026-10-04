@@ -3,8 +3,8 @@
 import { type DefaultError, type InfiniteData, infiniteQueryOptions, queryOptions, type UseMutationOptions } from '@tanstack/react-query';
 
 import { client } from '../client.gen.js';
-import { controlRun, createConversation, getCommandResult, getConversation, getHealth, getRun, listConversations, type Options } from '../sdk.gen.js';
-import type { ControlRunData, ControlRunError, ControlRunResponse, CreateConversationData, CreateConversationError, CreateConversationResponse, GetCommandResultData, GetCommandResultError, GetCommandResultResponse, GetConversationData, GetConversationError, GetConversationResponse, GetHealthData, GetHealthResponse, GetRunData, GetRunError, GetRunResponse, ListConversationsData, ListConversationsError, ListConversationsResponse } from '../types.gen.js';
+import { controlRun, createConversation, getChatConfig, getCommandResult, getConversation, getHealth, getRun, listConversations, type Options } from '../sdk.gen.js';
+import type { ControlRunData, ControlRunError, ControlRunResponse, CreateConversationData, CreateConversationError, CreateConversationResponse, GetChatConfigData, GetChatConfigResponse, GetCommandResultData, GetCommandResultError, GetCommandResultResponse, GetConversationData, GetConversationError, GetConversationResponse, GetHealthData, GetHealthResponse, GetRunData, GetRunError, GetRunResponse, ListConversationsData, ListConversationsError, ListConversationsResponse } from '../types.gen.js';
 
 export type QueryKey<TOptions extends Options> = [
     Pick<TOptions, 'baseUrl' | 'body' | 'headers' | 'path' | 'query'> & {
@@ -38,6 +38,21 @@ const createQueryKey = <TOptions extends Options>(id: string, options?: TOptions
     }
     return [params];
 };
+
+export const getChatConfigQueryKey = (options?: Options<GetChatConfigData>) => createQueryKey('getChatConfig', options);
+
+export const getChatConfigOptions = (options?: Options<GetChatConfigData>) => queryOptions<GetChatConfigResponse, DefaultError, GetChatConfigResponse, ReturnType<typeof getChatConfigQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getChatConfig({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getChatConfigQueryKey(options)
+});
 
 export const listConversationsQueryKey = (options?: Options<ListConversationsData>) => createQueryKey('listConversations', options);
 
