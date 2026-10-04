@@ -29,6 +29,8 @@ tokio-util = { version = "0.7", features = ["rt"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 telemetry = { path = "crates/telemetry" }
+runtime = { path = "crates/runtime" }
+persistence = { path = "crates/persistence" }
 opentelemetry = "0.33"
 opentelemetry_sdk = { version = "0.33", features = ["testing"] }
 opentelemetry-otlp = { version = "0.33", features = ["http-proto", "reqwest-blocking-client"] }
@@ -36,6 +38,11 @@ tracing-opentelemetry = "0.34"
 regex = "1"
 sha2 = "0.10"
 url = "2"
+toasty = { version = "=0.11.0", features = ["postgresql", "migration", "serde"] }
+toasty-driver-postgresql = "=0.11.0"
+apalis = "=1.0.0-rc.10"
+apalis-postgres = "=1.0.0-rc.9"
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "json"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

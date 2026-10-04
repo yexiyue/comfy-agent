@@ -43,4 +43,30 @@ impl ToolRegistry {
 
         tool.execute(call.fn_arguments.clone()).await
     }
+
+    pub fn recovery_policy(&self, name: &str) -> tools::RecoveryPolicy {
+        self.implementations
+            .get(name)
+            .map_or(tools::RecoveryPolicy::Conservative, |tool| {
+                tool.recovery_policy()
+            })
+    }
+
+    pub async fn execute_with_context(
+        &self,
+        call: &ToolCall,
+        context: &tools::ExecutionContext,
+        reconcile: bool,
+    ) -> anyhow::Result<Value> {
+        let tool = self
+            .implementations
+            .get(call.fn_name.as_str())
+            .with_context(|| format!("未知工具：{}", call.fn_name))?;
+        if reconcile {
+            tool.reconcile(call.fn_arguments.clone(), context).await
+        } else {
+            tool.execute_with_context(call.fn_arguments.clone(), context)
+                .await
+        }
+    }
 }

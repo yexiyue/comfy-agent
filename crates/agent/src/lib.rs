@@ -2,7 +2,10 @@
 pub mod agent;
 pub mod config;
 mod llm;
+pub mod phase;
 pub mod tool_registry;
+pub use llm::{ModelResponse, stream_response};
+pub use phase::Checkpoint;
 
 pub use agent::{AgentEvent, AgentOutcome, run_agent};
 pub use config::AgentConfig;

@@ -16,12 +16,12 @@ export async function inspectResults(results:Result[],baseUrl:string,project:str
       await new Promise(r=>setTimeout(r,200));
     }
     const roots=spans.filter(s=>s.name==='agent.run');
-    if (result.status==='ok' && roots.length!==result.runIds.length) throw Error(`Missing persisted backend spans for ${result.caseId}`);
-    if (result.status==='ok' && result.runIds.some(id=>roots.filter(s=>s.attributes?.['agent.run_id']===id).length!==1)) throw Error(`Persisted run ID mismatch for ${result.caseId}`);
+    if (result.status==='ok' && new Set(roots.map(s=>s.attributes?.['agent.run_id'])).size!==result.runIds.length) throw Error(`Missing persisted backend spans for ${result.caseId}`);
+    if (result.status==='ok' && result.runIds.some(id=>roots.filter(s=>s.attributes?.['agent.run_id']===id).length<1)) throw Error(`Persisted run ID mismatch for ${result.caseId}`);
     for (const root of roots) if (root.parent_id!==result.parentSpanId) throw Error('Persisted parent span mismatch');
     if (roots.length && !spans.some(s=>s.context.span_id===result.parentSpanId)) throw Error('Persisted experiment task parent is missing');
     const models=spans.filter(s=>s.span_kind==='LLM');
     const tools=spans.filter(s=>s.span_kind==='TOOL');
-    result.metrics={modelCalls:models.length,toolCalls:tools.length,toolErrors:tools.filter(s=>s.status_code==='ERROR').length,outcomes:roots.map(s=>s.attributes?.['agent.outcome']),ttftMs:roots.map(s=>s.attributes?.['agent.request_ttft_ms']).filter(v=>typeof v==='number'),knownTokens:models.map(s=>s.attributes?.['llm.token_count.total']).filter((v):v is number=>typeof v==='number').reduce((a,b)=>a+b,0),usageMissing:models.filter(s=>typeof s.attributes?.['llm.token_count.total']!=='number').length};
+    result.metrics={modelCalls:models.length,toolCalls:tools.length,toolErrors:tools.filter(s=>s.status_code==='ERROR').length,outcomes:roots.map(s=>s.attributes?.['agent.outcome']),ttftMs:roots.map(s=>s.attributes?.['agent.execution_ttft_ms']).filter(v=>typeof v==='number'),knownTokens:models.map(s=>s.attributes?.['llm.token_count.total']).filter((v):v is number=>typeof v==='number').reduce((a,b)=>a+b,0),usageMissing:models.filter(s=>typeof s.attributes?.['llm.token_count.total']!=='number').length};
   }
 }

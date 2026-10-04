@@ -33,14 +33,30 @@ test('real Rust SSE handles isolated trials, failure, timeout, history and budge
   const mock=await startMock();
   try {
     const [a,b]=await Promise.all([execute(c,1,mock.api,new Budget(5),5000),execute(c,2,mock.api,new Budget(5),5000)]);
-    assert.equal(a.scores.task.score,1);assert.equal(b.scores.task.score,1);assert.notEqual(a.runIds[0],b.runIds[0]);
+    assert.equal(a.scores.task.score,1);assert.equal(b.scores.task.score,1);assert.notEqual(a.runIds[0],b.runIds[0]);assert.notEqual(a.conversationId,b.conversationId);
     const skipped=await execute(c,1,mock.api,new Budget(0),5000);assert.equal(skipped.status,'budget-skipped');
     const error=await execute({...c,messages:[{id:'u',role:'user',parts:[{type:'text',text:'FAIL'}]}]},1,mock.api,new Budget(1),5000);assert.equal(error.status,'error');
-    const timeout=await execute({...c,messages:[{id:'u',role:'user',parts:[{type:'text',text:'STALL'}]}]},1,mock.api,new Budget(1),100);assert.equal(timeout.status,'timeout');
+    const timeout=await execute({...c,messages:[{id:'u',role:'user',parts:[{type:'text',text:'STALL'}]}]},1,mock.api,new Budget(1),100);assert.equal(timeout.status,'timeout');assert.equal(timeout.cleanup?.confirmed,true);assert(timeout.runIds.length===1);
+    const cancelled=await (await fetch(new URL(`/api/runs/${timeout.runIds[0]}`,mock.api))).json();assert.equal(cancelled.status,'cancelled');assert((timeout.attemptIds?.length??0)<=1);
     const summary=summarize([a,b,skipped,error,timeout]);assert.equal(summary.planned,5);assert.equal(summary.scores.task.count,4);assert.equal(summary.scores.task.rate,.5);
     const {cases}=await loadCases(fileURLToPath(new URL('../cases.jsonl',import.meta.url)));
     const history=await execute(cases.find(c=>c.id==='history')!,1,mock.api,new Budget(3),5000);assert.equal(history.scores.task.score,1);assert.equal(history.messages.length,2);
     const tool=history.messages[0].parts.find(p=>p.type==='tool-add') as {toolCallId?:string}|undefined;assert(tool?.toolCallId);
+    const originalFetch=globalThis.fetch;
+    let dropped=false;
+    try {
+      globalThis.fetch=async(input,init)=>{
+        const response=await originalFetch(input,init);
+        if(!dropped && String(input)===mock.api && init?.method==='POST'){
+          dropped=true;await response.body?.cancel();throw Error('Accepted response lost');
+        }
+        return response;
+      };
+      const lost=await execute({...c,messages:[{id:'u',role:'user',parts:[{type:'text',text:'STALL'}]}]},1,mock.api,new Budget(1),5000);
+      assert(dropped);assert.equal(lost.status,'error');assert.equal(lost.cleanup?.confirmed,true);
+      assert.equal(lost.runIds.length,1);
+      assert.equal((await (await originalFetch(new URL(`/api/runs/${lost.runIds[0]}`,mock.api))).json()).status,'cancelled');
+    }finally{globalThis.fetch=originalFetch;}
   } finally {await mock.close();}
 });
 test('failed Phoenix publication persists all planned trial records',async()=>{

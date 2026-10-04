@@ -7,7 +7,9 @@ This Rust 2024 project is a virtual Cargo workspace. Shared dependencies and lin
 - `crates/agent/`: agent loop, streaming events, model configuration, and tool registry.
 - `crates/tools/`: `AgentTool` interface and exported `#[agent_tool]` attribute.
 - `crates/tool-macros/`: procedural macro implementation.
-- `crates/server/`: Axum chat API, UIMessage conversion, and SSE streaming.
+- `crates/server/`: Axum commands, authoritative snapshots, and independent SSE subscriptions.
+- `crates/runtime/`: domain state, storage ports, and persisted phase execution; no HTTP/ORM dependency.
+- `crates/persistence/`: Toasty PostgreSQL transactions, explicit migrations, Apalis queue/outbox and recovery.
 - `crates/telemetry/`: OpenInference spans, content policy, bounded OTLP export, and terminal outcomes. Hosts initialize exporters; the agent core does not.
 - `crates/*/tests/`: integration tests for agent behavior and generated tools.
 - `workflows/`: ComfyUI frontend and API JSON examples.
@@ -26,7 +28,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-These build all crates, check compilation, run tests, verify formatting, and reject lint warnings. Use `cargo fmt --all` to apply formatting. Run the local HTTP backend with `cargo run -p server` (default `127.0.0.1:3001`).
+These build all crates, check compilation, run tests, verify formatting, and reject lint warnings. Use `cargo fmt --all` to apply formatting. Start `compose.postgres.yaml` and run `cargo run -p persistence --bin migrate` explicitly before running the HTTP backend with `cargo run -p server` (default `127.0.0.1:3001`).
 
 For a running local ComfyUI instance, use:
 
@@ -48,11 +50,11 @@ Backend address comes from `VITE_API_BASE` in `apps/web/.env` (default `http://l
 
 ## Coding Style & Naming Conventions
 
-Follow rustfmt defaults: four-space indentation, `snake_case` functions/modules, `PascalCase` types, and `SCREAMING_SNAKE_CASE` constants. Keep reusable dependencies in `[workspace.dependencies]` and inherit workspace lints; unsafe code is forbidden. Keep terminal output outside the agent core and expose progress through events. Use Mermaid for useful documentation diagrams.
+Follow rustfmt defaults: four-space indentation, `snake_case` functions/modules, `PascalCase` types, and `SCREAMING_SNAKE_CASE` constants. Keep reusable dependencies in `[workspace.dependencies]` and inherit workspace lints; unsafe code is forbidden. Preserve the single Agent phase machine. Acquire conversation locks before run locks, fence durable writes by live lease/generation, and commit decisions/results before external actions. Tools default to conservative recovery; declare safe/idempotent/reconcilable policies explicitly. Keep terminal output outside the agent core and expose progress through events. Use Mermaid for useful documentation diagrams.
 
 ## Testing Guidelines
 
-Use Rust tests and `#[tokio::test]` for asynchronous behavior. Name tests descriptively, such as `tool_roundtrip_preserves_history_and_emits_events`. Tests use local mock models without production credentials. Cover history, step limits, tool errors, serialization, SSE boundaries, and cancellation. No numeric coverage threshold is configured. Run `cargo test -p server` for backend tests. Validate with the official AI SDK parser using `npm ci --prefix scripts/ai-sdk-check` and `npm run check:mock --prefix scripts/ai-sdk-check`, then run the workspace suite.
+Use Rust tests and `#[tokio::test]` for asynchronous behavior. Name tests descriptively, such as `tool_roundtrip_preserves_history_and_emits_events`. Tests use local mock models without production credentials. Cover history, step limits, tool errors, serialization, SSE boundaries, and cancellation. No numeric coverage threshold is configured. Run `cargo test -p server` for credential-free protocol tests. PostgreSQL tests are ignored by default: set a dedicated `_test` `TEST_DATABASE_URL`, then run `cargo test -p persistence -p server -- --ignored --test-threads=1`. Mock eval/server fixtures create their own child databases. Run `node --experimental-strip-types scripts/durable-check/check.mjs` for actual process restart and official replay validation, and `pnpm -C apps/web test` for frontend submission/replay invariants. Validate with the official AI SDK parser using `npm ci --prefix scripts/ai-sdk-check` and `npm run check:mock --prefix scripts/ai-sdk-check`, then run the workspace suite.
 
 ## Commit & Pull Request Guidelines
 

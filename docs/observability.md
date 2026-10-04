@@ -24,15 +24,15 @@ $env:AGENT_CONFIG_MANIFEST='outputs/agent-config.json'
 cargo run -p server
 ```
 
-环境变量见 `.env.example`。关闭 `OTEL_ENABLED` 后聊天仍可运行并返回 runId；开启后 finish metadata 还包含 traceId。CORS 允许 `traceparent`、`tracestate`、`X-Agent-Run-Source`；仅 `eval` source 有效，其作用是本地分类，不是认证。
+环境变量见 `.env.example`。关闭 `OTEL_ENABLED` 后聊天仍可运行并返回 runId；开启后 finish metadata 还包含 attemptId 和 traceId。run 查询汇总全部 attempts。CORS 允许 `traceparent`、`tracestate`、`X-Agent-Run-Source`；仅 `eval` source 有效，其作用是本地分类，不是认证。
 
 ## 轨迹与指标
 
-每轮聊天是 AGENT span，下面是 CHAIN 步骤，以及 LLM 模型和 TOOL 执行。后台 SSE 任务携带 tracing 上下文；断开连接会取消正在等待的模型或工具，并记录终态，已发生的外部副作用不撤销。
+每个后台 attempt 是 `agent.run` AGENT 根，其下为 `agent.attempt`、CHAIN 步骤、LLM 模型和 TOOL 执行。traceparent 随持久化任务传播；断开 SSE 仅结束订阅，任务继续。暂停、明确终止和服务关闭会丢弃当前等待；已发生的外部副作用不撤销。恢复保持 runId，新增 attemptId；故障缺失 span 以数据库 attempts 为准。订阅与执行延迟分开统计，重放不会增加调用/token 数。启动前需要 PostgreSQL 和显式迁移，见 [持久化运行指南](durable-sessions.md)。
 
 | 字段 | 含义 |
 | --- | --- |
-| `session.id` / `agent.run_id` | 客户端聊天 ID / 本次执行 ID |
+| `session.id` / `agent.run_id` | 服务端会话 ID / 逻辑任务 ID |
 | `agent.outcome` | finished、step-limit、model-error、cancelled、shutdown、queue-overflow、internal-error |
 | `agent.steps` / `agent.tool_calls` | 已完成步骤 / 开始执行的工具次数 |
 | `agent.request_ttft_ms` | 后端接受请求至首个可见 TextDelta |
@@ -42,7 +42,7 @@ cargo run -p server
 
 token 只在 LLM span 使用官方计数字段，父 span 的自定义小计不重复计入。缓存和 reasoning 是明细，不能再次加到总量。纯工具步骤、提前取消和提供商未返回 usage 时，缺失指标保持未知。`finished` 仅表示执行完成；质量成功由评分器判断。工具错误恢复后根执行仍可 finished。Coding Plan 订阅不能换算为按 token 账单，首版无美元成本估计。
 
-导出缓存最多 2048 spans、批量约每秒提交，网络超时 2 秒；失败/丢弃通过本地诊断报告，不影响聊天。正常关闭先取消并等待活动任务，再尝试有限时间刷新（最多约 5 秒）。强制终止进程可能丢失最后一批。测试 runner 在 Windows 使用显式 `SERVER_SHUTDOWN_STDIN=true` 并写入 `shutdown`，让退出和 flush 可验证；平时使用 Ctrl+C，Unix 还支持 SIGTERM。
+导出缓存最多 2048 spans、批量约每秒提交，网络超时 2 秒；失败/丢弃通过本地诊断报告，不影响聊天。正常关闭先取消并等待活动任务，保留安全任务的恢复资格，再尝试有限时间刷新（最多约 5 秒）。强制终止进程可能丢失最后一批。测试 runner 在 Windows 使用显式 `SERVER_SHUTDOWN_STDIN=true` 并写入 `shutdown`，让退出和 flush 可验证；平时使用 Ctrl+C，Unix 还支持 SIGTERM。
 
 ## 内容策略
 
@@ -53,6 +53,8 @@ token 只在 LLM span 使用官方计数字段，父 span 的自定义小计不�
 Node >=22，评测复用真实 Rust `/api/chat` 与官方 AI SDK parser。22 个版本化 JSONL 用例覆盖文本、加法、溢出恢复与完整多轮历史。模拟模型在本机运行，不使用真实 key；模型故障、取消、shutdown、overflow 由技术测试验证。
 
 ```powershell
+# 先按 README 启动 PostgreSQL 并创建专用测试库
+$env:TEST_DATABASE_URL = 'postgresql://comfy_agent:comfy_agent_local@127.0.0.1:5432/comfy_agent_test'
 cargo build -p server
 npm ci --prefix scripts/evals
 npm run check --prefix scripts/evals
@@ -70,7 +72,7 @@ npm run eval --prefix scripts/evals -- --real --phoenix --manifest outputs/agent
 
 也可加 `--start-server`，让 runner 在临时端口启动并正常关闭使用根目录 `.env` 的真实后端。runner 复制构建好的可执行文件，避免 Windows 运行期间锁住 Cargo 输出；仍需先 `cargo build -p server`。服务本身无默认 system prompt；manifest 的空提示 hash 表示这一事实，实验再根据 fixtures 中实际系统消息计算 systemPromptHash。
 
-默认 3 trials、并发 2、每 trial 60 秒和最多 100 个聊天请求，可用 `--trials`、`--concurrency`、`--timeout-ms`、`--max-requests` 覆盖。预算计聊天请求，Agent 每请求还受 `AGENT_MAX_STEPS` 约束；这是请求数量控制，不是费用上限。每 trial 独立历史，多轮用例显式保持自己的历史。fixtures 的答案采用精确文本规则，真实模型可能因额外说明而评分失败，这就是当前评分定义。
+默认 3 trials、并发 2、每 trial 60 秒和最多 100 个聊天请求，可用 `--trials`、`--concurrency`、`--timeout-ms`、`--max-requests` 覆盖。预算计聊天请求，Agent 每请求还受 `AGENT_MAX_STEPS` 约束；这是请求数量控制，不是费用上限。每 trial 独立服务端会话，多轮仅提交新增消息，由后端保存并投影历史。fixtures 的答案采用精确文本规则，真实模型可能因额外说明而评分失败，这就是当前评分定义。
 
 不带 `--phoenix` 时只保存本地结果；带此参数导入本地数据集，执行 `runExperiment`，发布 CODE 评分并查询实际持久化 span，验证 parent ID。Phoenix 20.19 为实验返回专属 `Experiment-*` 项目，但同一 trace 的项目由首次到达的 span 决定：快速 mock 通常归入实验项目，慢模型的 Rust span 可能先写入 `comfy-agent-evals`。runner 查询两处并记录实际 traceProject；后到的父 span 与既有 trace 合并。两类评测都与交互项目 `comfy-agent-local` 分离。不使用云端 scorer 或 LLM judge。
 
@@ -79,3 +81,14 @@ npm run eval --prefix scripts/evals -- --real --phoenix --manifest outputs/agent
 产物保存在 gitignored `outputs/evals/<timestamp>/`：逐条 JSONL、JSON 和 Markdown 汇总。包括数据集 hash、Git SHA/dirty 状态、模型/提示词/工具 schema 指纹、评分器版本、预算及 trial 配置。失败与超时计入任务成功率，跳过单列；不适用评分不计分母。上传失败保留结果并返回非零状态。
 
 `--baseline <summary.json>` 比较兼容数据集/评分器版本的两次报告，展示质量、错误、延迟、步骤、工具错误及 usage 缺失；真实模型首版只报告变化，不设置任意通过率门槛。mock 命令有确定性门禁。Phoenix 不可用时本地评测仍可独立运行，聊天导出 best effort。
+
+## 持久化评测与恢复门禁
+
+设置专用 `TEST_DATABASE_URL` 后运行 mock 评测；每个 mock server 创建随机子库，trial 创建独立会话。多轮仅提交新增 user 消息；响应丢失可由 command receipt 查回 run，超时显式 cancel，报告 `cleanup.confirmed`/失败原因。结果包含 conversationId、runIds、attemptIds 和 traceIds，评分规则仍独立于技术完成。
+
+```powershell
+$env:TEST_DATABASE_URL = 'postgresql://comfy_agent:comfy_agent_local@127.0.0.1:5432/comfy_agent_test'
+node --experimental-strip-types scripts/durable-check/check.mjs
+```
+
+模型暂停重做计入实际调用；旧草稿不进入最终回答。查询 `GET /api/runs/{id}` 的 `statistics.usageComplete` 区分已知小计与完整账单。订阅观测用 `agent.subscription_ttft_ms`，后台用 `agent.execution_ttft_ms`，模型用 `agent.model_ttft_ms`，不应直接混合比较。

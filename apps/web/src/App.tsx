@@ -25,17 +25,12 @@ import {
   ToolOutput,
 } from '@/components/ai-elements/tool'
 import { useBackendHealth } from '@/hooks/use-backend-health'
-import { CHAT_ENDPOINT } from '@/lib/api'
-import {
-  sanitizeMessages,
-  type ChatUIMessage,
-} from '@/lib/chat'
+import { useDurableChat } from '@/hooks/use-durable-chat'
+import { isRunning } from '@/lib/session'
+import { type ChatUIMessage } from '@/lib/chat'
 import { chatTools, type AnyToolPart } from '@/lib/tools'
-import { useChat } from '@ai-sdk/react'
-import { DefaultChatTransport } from 'ai'
 import type { ToolUIPart, UIMessage } from 'ai'
 import { CircleAlertIcon } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 function asToolPart(part: UIMessage['parts'][number]): AnyToolPart | null {
   if (part.type === 'dynamic-tool') return part
@@ -93,6 +88,7 @@ function MessageParts({
         }
         return null
       })}
+      {message.metadata?.draft && (<div className="text-muted-foreground text-xs">{message.metadata.status === 'superseded' ? '已被新指令接替的未完成草稿' : message.metadata.status === 'cancelled' ? '已终止的未完成草稿' : '未完成草稿；继续时将替换这一段'}</div>)}
       {stopped && (
         <div className="text-muted-foreground text-xs">已停止生成</div>
       )}
@@ -117,45 +113,14 @@ function MessageParts({
 function App() {
   const { health, address, probe } = useBackendHealth()
 
-  const transport = useMemo(
-    () => new DefaultChatTransport<ChatUIMessage>({ api: CHAT_ENDPOINT }),
-    []
-  )
-  const chat = useChat<ChatUIMessage>({ transport })
-
-  // 流结束（ready/error）后清理未完成的工具 part，保证下一次发送能过后端校验。
-  const statusRef = useRef(chat.status)
-  useEffect(() => {
-    const wasActive =
-      statusRef.current === 'submitted' || statusRef.current === 'streaming'
-    const settled = chat.status === 'ready' || chat.status === 'error'
-    if (wasActive && settled) {
-      chat.setMessages(sanitizeMessages(chat.messages))
-      if (stopPendingRef.current) {
-        stopPendingRef.current = false
-        const last = chat.messages.at(-1)
-        if (last?.role === 'assistant') {
-          setStoppedIds((ids) => new Set(ids).add(last.id))
-        }
-      }
-    }
-    statusRef.current = chat.status
-  }, [chat.status, chat.messages, chat.setMessages])
-
-  const busy = chat.status === 'submitted' || chat.status === 'streaming'
-
-  // stop() 时给正在流式的助手消息打上"已停止"标记（仅展示，不参与历史）。
-  // 标记放在流落定后做：流式消息 id 会随 start 事件替换，停止瞬间取到的 id 不可靠。
-  const [stoppedIds, setStoppedIds] = useState<ReadonlySet<string>>(new Set())
-  const stopPendingRef = useRef(false)
-  const handleStop = useCallback(() => {
-    stopPendingRef.current = true
-    chat.stop()
-  }, [chat])
-
+  const { chat, snapshot, run, sessions, operation, failure, load, control } = useDurableChat()
+  const busy = chat.status === 'submitted' || chat.status === 'streaming' || isRunning(run)
+  const handleStop = () => { void control('pause') }
   const handleSubmit = (message: { text?: string }) => {
     const text = message.text?.trim()
-    if (!text || busy) return
+    if (!text || operation || !snapshot) return
+    if (run?.status === 'paused') { void control('steer', text); return }
+    if (busy || run?.status === 'needs-attention') return
     void chat.sendMessage({ text })
   }
 
@@ -200,6 +165,17 @@ function App() {
         </div>
       )}
 
+      <div className="flex flex-wrap items-center gap-2 px-4 pb-2 text-xs">
+        <select aria-label="选择会话" value={snapshot?.id ?? ''} disabled={operation} onChange={event => void load(event.target.value)} className="bg-background rounded border p-1">
+          <option value="" disabled>加载会话…</option>
+          {sessions.map(session => <option key={session.id} value={session.id}>会话 {session.id.slice(0, 8)}</option>)}
+        </select>
+        <button type="button" disabled={operation} onClick={() => void load()} className="rounded border px-2 py-1">新会话</button>
+        {run && <span aria-live="polite">{run.status === 'pausing' ? '正在暂停…' : run.status === 'paused' ? '已暂停：可原样继续，或发送追加指令' : run.status === 'needs-attention' ? '外部操作结果未知，请核对后终止任务' : run.status}</span>}
+        {run?.status === 'paused' && <button type="button" disabled={operation} onClick={() => void control('resume')} className="rounded border px-2 py-1">原样继续</button>}
+        {run && <button type="button" disabled={operation} onClick={() => void control('cancel')} className="rounded border px-2 py-1">终止任务</button>}
+      </div>
+      {failure && <div role="alert" className="text-destructive px-4 text-sm">{failure}</div>}
       <Conversation>
         <ConversationContent>
           {chat.messages.length === 0 ? (
@@ -212,7 +188,7 @@ function App() {
               <Message from={message.role} key={message.id}>
                 <MessageParts
                   message={message}
-                  stopped={stoppedIds.has(message.id)}
+                  stopped={false}
                 />
               </Message>
             ))
@@ -244,7 +220,8 @@ function App() {
                   event.preventDefault()
                 }
               }}
-              placeholder="输入消息，Enter 发送，Shift+Enter 换行"
+              disabled={operation || !snapshot || run?.status === 'needs-attention'}
+              placeholder={run?.status === 'paused' ? '追加指令将接替暂停任务；原样继续请点击上方按钮' : '输入消息，Enter 发送，Shift+Enter 换行'}
             />
           </PromptInputBody>
           <PromptInputFooter>
@@ -255,7 +232,7 @@ function App() {
                 </span>
               )}
             </PromptInputTools>
-            <PromptInputSubmit onStop={handleStop} status={chat.status} />
+            <PromptInputSubmit aria-label={busy ? '暂停任务' : run?.status === 'paused' ? '追加指令并重新规划' : '发送消息'} title={busy ? '暂停任务' : '发送消息'} disabled={operation || !snapshot || run?.status === 'needs-attention' || run?.status === 'pausing'} onStop={handleStop} status={busy ? 'streaming' : 'ready'} />
           </PromptInputFooter>
         </PromptInput>
       </div>

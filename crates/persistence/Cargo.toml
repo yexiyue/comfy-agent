@@ -1,0 +1,31 @@
+[package]
+name = "persistence"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.95"
+
+[dependencies]
+runtime.workspace = true
+toasty.workspace = true
+toasty-driver-postgresql.workspace = true
+apalis.workspace = true
+apalis-postgres.workspace = true
+sqlx.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+uuid.workspace = true
+dotenvy.workspace = true
+futures.workspace = true
+genai.workspace = true
+sha2.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+agent.workspace = true
+tools.workspace = true
+tokio-util.workspace = true
+
+[lints]
+workspace = true

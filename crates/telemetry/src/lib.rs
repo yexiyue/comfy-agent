@@ -135,16 +135,11 @@ pub fn init(config: &Config) -> anyhow::Result<Option<SdkTracerProvider>> {
     } else {
         None
     };
-    let layer = provider.as_ref().map(|p| {
-        tracing_opentelemetry::layer()
-            .with_tracer(p.tracer("comfy-agent"))
-            .with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
-                matches!(
-                    metadata.target().split("::").next(),
-                    Some("server" | "agent" | "telemetry")
-                )
-            }))
-    });
+    // The exporter selects OpenInference spans. Keeping one unfiltered tracing
+    // layer also preserves explicit parents when Axum/Apalis poll outside app spans.
+    let layer = provider
+        .as_ref()
+        .map(|p| tracing_opentelemetry::layer().with_tracer(p.tracer("comfy-agent")));
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::fmt::layer()

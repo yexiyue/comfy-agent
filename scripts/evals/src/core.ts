@@ -7,7 +7,7 @@ import { context, trace } from '@opentelemetry/api';
 export type ToolExpectation = { name: string; input: Record<string, unknown>; output?: unknown; error?: boolean };
 export type Case = { id: string; messages: UIMessage[]; followups?: string[]; expected: { answer: string; tools: ToolExpectation[]; maxSteps: number }; mock?: { a: string; b: string; overflow?: boolean } };
 export type Score = { score: number | null; label: string; explanation: string };
-export type Result = { caseId: string; trial: number; status: 'ok'|'error'|'timeout'|'budget-skipped'; durationMs: number; messages: UIMessage[]; scores: Record<string,Score>; traceIds: string[]; runIds: string[]; reason?: string; parentTraceId?: string; parentSpanId?: string; traceProject?:string; metrics?: {modelCalls:number;toolCalls:number;toolErrors:number;outcomes:unknown[];ttftMs:unknown[];knownTokens:number;usageMissing:number} };
+export type Result = { caseId: string; trial: number; status: 'ok'|'error'|'timeout'|'budget-skipped'; durationMs: number; messages: UIMessage[]; scores: Record<string,Score>; traceIds: string[]; runIds: string[]; reason?: string; conversationId?:string;attemptIds?:string[];cleanup?:{confirmed:boolean;reason?:string};parentTraceId?: string; parentSpanId?: string; traceProject?:string; metrics?: {modelCalls:number;toolCalls:number;toolErrors:number;outcomes:unknown[];ttftMs:unknown[];knownTokens:number;usageMissing:number} };
 export const graderVersion = '1';
 export const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 
@@ -58,25 +58,59 @@ export async function execute(c:Case, trial:number, api:string, budget:Budget, t
   const parent=trace.getSpan(context.active())?.spanContext();
   const headers:Record<string,string>={'X-Agent-Run-Source':'eval'};
   if (parent) { headers.traceparent=`00-${parent.traceId}-${parent.spanId}-01`; result.parentTraceId=parent.traceId; result.parentSpanId=parent.spanId; }
-  let history=structuredClone(c.messages);
-  const chatId=randomUUID();
+  let conversation:{id:string;revision:number}|undefined;
+  let pendingRequest:string|undefined;
+  let activeRun:string|undefined;
+  const endpoint=(path:string)=>new URL(path,api).toString();
+  const json=async(path:string,body?:unknown,signal:AbortSignal=controller.signal)=>{
+    const response=await fetch(endpoint(path),{signal,headers:{...headers,'Content-Type':'application/json'},...(body===undefined?{}:{method:'POST',body:JSON.stringify(body)})});
+    const value=await response.json();if(!response.ok)throw Error(`HTTP ${response.status}`);return value;
+  };
+  const remember=async(runId:string,signal:AbortSignal)=>{
+    const run=await json(`/api/runs/${runId}`,undefined,signal);
+    if(!result.runIds.includes(runId))result.runIds.push(runId);
+    result.attemptIds??=[];
+    for(const attempt of run.attempts??[]){if(!result.attemptIds.includes(attempt.id))result.attemptIds.push(attempt.id);if(attempt.traceId&&!result.traceIds.includes(attempt.traceId))result.traceIds.push(attempt.traceId);}
+    return run;
+  };
   try {
     for (const followup of [undefined,...(c.followups ?? [])]) {
       if (!budget.take()) { result.status='budget-skipped'; result.reason='Request budget exhausted'; break; }
-      if (followup!==undefined) history.push({id:randomUUID(),role:'user',parts:[{type:'text',text:followup}]});
-      const transport=new DefaultChatTransport({api,headers});
-      const stream=await transport.sendMessages({trigger:'submit-message',chatId,messageId:undefined,messages:history,abortSignal:controller.signal});
+      if(!conversation){conversation=await json('/api/conversations',{messages:c.messages.slice(0,-1)});result.conversationId=conversation!.id;}
+      const snapshot=await json(`/api/conversations/${conversation!.id}`);
+      const message=followup===undefined?c.messages.at(-1)!:{id:randomUUID(),role:'user' as const,parts:[{type:'text' as const,text:followup}]};
+      pendingRequest=randomUUID();
+      const transport=new DefaultChatTransport({api,headers,prepareSendMessagesRequest:()=>({body:{id:conversation!.id,expectedRevision:snapshot.revision,requestId:pendingRequest,message}})});
+      const stream=await transport.sendMessages({trigger:'submit-message',chatId:conversation!.id,messageId:undefined,messages:[message],abortSignal:controller.signal});
+      const receipt=await json(`/api/conversations/${conversation!.id}/commands/${pendingRequest}`);
+      activeRun=receipt.runId;
       let last:UIMessage|undefined;
       for await (const message of readUIMessageStream({stream,terminateOnError:true})) last=message;
       if (!last) throw Error('Missing final UIMessage');
-      messages.push(last); history.push(last);
-      const metadata=last.metadata as {runId?:string;traceId?:string}|undefined;
-      if (metadata?.runId) result.runIds.push(metadata.runId);
-      if (metadata?.traceId) result.traceIds.push(metadata.traceId);
+      messages.push(last);
+      const run=await remember(activeRun!,controller.signal);
+      if(!['finished','step-limit'].includes(run.status))throw Error('Run did not finish');
+      activeRun=undefined;pendingRequest=undefined;
     }
   } catch {
     result.status=controller.signal.aborted?'timeout':'error'; result.reason=result.status==='timeout'?'Trial timed out':'Chat transport/model/protocol failed';
-  } finally { clearTimeout(timer); }
+  } finally {
+    clearTimeout(timer);
+    if(conversation && pendingRequest){
+      try {
+        const cleanupSignal=AbortSignal.timeout(5000);
+        if(!activeRun){const receipt=await json(`/api/conversations/${conversation.id}/commands/${pendingRequest}`,undefined,cleanupSignal);activeRun=receipt.runId;}
+        let run=await remember(activeRun!,cleanupSignal);
+        for(let retry=0;retry<5 && !['finished','step-limit','failed','cancelled','superseded'].includes(run.status);retry++){
+          const response=await fetch(endpoint(`/api/runs/${run.id}/cancel`),{method:'POST',signal:cleanupSignal,headers:{'Content-Type':'application/json'},body:JSON.stringify({conversationId:conversation.id,expectedVersion:run.version,requestId:randomUUID()})});
+          if(!response.ok && response.status!==409)throw Error(`Cancel HTTP ${response.status}`);
+          run=await remember(run.id,cleanupSignal);
+        }
+        result.cleanup={confirmed:['finished','step-limit','failed','cancelled','superseded'].includes(run.status)};
+        if(!result.cleanup.confirmed)result.cleanup.reason='Cancellation not confirmed';
+      }catch {result.cleanup={confirmed:false,reason:'Cleanup failed: task state could not be confirmed'};}
+    }
+  }
   result.durationMs=Date.now()-started; result.scores=grade(c,messages,result.status); return result;
 }
 

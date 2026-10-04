@@ -1,34 +1,25 @@
-//! Stateless HTTP transport for the agent core.
+//! Durable HTTP commands and independent UI Message Stream subscriptions.
+mod durable;
 pub mod protocol;
-mod stream;
-
-use std::{sync::Arc, time::Duration};
-
 use agent::{ToolRegistry, agent_tool};
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, State, rejection::JsonRejection},
-    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
-    response::{IntoResponse, Response, Sse, sse::KeepAlive},
+    extract::DefaultBodyLimit,
+    http::{HeaderValue, Method, header},
     routing::{get, post},
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio_util::sync::CancellationToken;
+use std::sync::Arc;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
-
 #[derive(Clone)]
 pub struct AppState {
-    pub client: genai::Client,
+    pub service: Arc<runtime::execution::ExecutionService>,
     pub model: Arc<str>,
     pub max_steps: usize,
-    pub registry: Arc<ToolRegistry>,
-    pub shutdown: CancellationToken,
-    pub telemetry: Arc<telemetry::Config>,
-    pub tasks: tokio_util::task::TaskTracker,
+    pub tool_schema_hash: Arc<str>,
 }
-
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct AddArgs {
@@ -48,14 +39,26 @@ async fn add(args: AddArgs) -> anyhow::Result<Value> {
 
 pub fn default_registry() -> anyhow::Result<ToolRegistry> {
     let mut registry = ToolRegistry::default();
-    registry.register(AddTool)?;
+    registry.register(tools::SafeToRetry(AddTool))?;
     Ok(registry)
 }
 
 pub fn router(state: AppState, origins: Vec<HeaderValue>) -> Router {
     Router::new()
         .route("/health", get(|| async { Json(json!({"status":"ok"})) }))
-        .route("/api/chat", post(chat))
+        .route("/api/chat", post(durable::chat))
+        .route(
+            "/api/conversations",
+            get(durable::list).post(durable::create),
+        )
+        .route("/api/conversations/{id}", get(durable::snapshot))
+        .route(
+            "/api/conversations/{id}/commands/{request_id}",
+            get(durable::receipt),
+        )
+        .route("/api/runs/{id}", get(durable::run))
+        .route("/api/runs/{id}/{action}", post(durable::control))
+        .route("/api/chat/{id}/stream", get(durable::stream))
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .layer(
             CorsLayer::new()
@@ -73,65 +76,4 @@ pub fn router(state: AppState, origins: Vec<HeaderValue>) -> Router {
         )
         .layer(TraceLayer::new_for_http())
         .with_state(state)
-}
-
-async fn chat(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    input: Result<Json<protocol::ChatInput>, JsonRejection>,
-) -> Response {
-    let input = match input {
-        Ok(Json(input)) => input,
-        Err(error) => {
-            return (error.status(), Json(json!({"error":error.body_text()}))).into_response();
-        }
-    };
-    let session_id = input.id.clone();
-    let history = match input.into_history() {
-        Ok(history) => history,
-        Err(error) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error":error.to_string()})),
-            )
-                .into_response();
-        }
-    };
-    if state.shutdown.is_cancelled() {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"error":"Server shutting down"})),
-        )
-            .into_response();
-    }
-    let source = headers
-        .get("x-agent-run-source")
-        .and_then(|v| v.to_str().ok());
-    if source.is_some_and(|v| v != "eval") {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error":"Unsupported run source"})),
-        )
-            .into_response();
-    }
-    let context = stream::RunContext::new(&state, &headers, session_id, source == Some("eval"));
-    let mut response = Sse::new(stream::chat_stream(state, history, context))
-        .keep_alive(
-            KeepAlive::new()
-                .interval(Duration::from_secs(10))
-                .text("ping"),
-        )
-        .into_response();
-    response.headers_mut().insert(
-        "x-vercel-ai-ui-message-stream",
-        HeaderValue::from_static("v1"),
-    );
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("no-cache, no-transform"),
-    );
-    response
-        .headers_mut()
-        .insert("x-accel-buffering", HeaderValue::from_static("no"));
-    response
 }

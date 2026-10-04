@@ -87,3 +87,11 @@ let tool = CountTool::new(ctx.clone());
 
 测试示例见本 crate 的 `tests/agent_tool.rs`，注册表集成示例见 `crates/agent/tests/agent.rs`。
 运行 `cargo test --workspace` 验证。
+
+## 持久化执行与副作用恢复
+
+宏生成的工具仍兼容原接口，默认 `RecoveryPolicy::Conservative`。对于无外部副作用的纯计算工具，可注册 `tools::SafeToRetry(AddTool)`，加法后端已这样配置。不要把付费请求、文件写入或外部任务提交随意标为安全。
+
+需要恢复外部动作时，手工实现 `AgentTool::execute_with_context`：`ExecutionContext.operation_key` 是稳定的 run/call 幂等键，恢复不会改变它。`Idempotent` 策略要求外部系统实际接受这个键并去重；工具自身应将键传给外部 API。`Reconcilable` 工具应在得到任务 ID 后先 `context.record_external_id(id).await?`，再等待结果；恢复改调用 `reconcile` 查询原 ID。查询失败不会重提交，会进入 `needs-attention`。
+
+默认保守策略在未确认的外部结果上停止自动恢复。暂停和取消丢弃本地 future，不代表已发生的外部副作用被撤销。详细运行例子见 [持久化会话指南](../../docs/durable-sessions.md)。

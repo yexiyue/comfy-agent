@@ -8,13 +8,13 @@ use genai::{
 use telemetry::attribute;
 use tracing::Instrument;
 
-pub(crate) struct ModelResponse {
+pub struct ModelResponse {
     pub content: MessageContent,
     pub usage: Option<Usage>,
     pub stop_reason: Option<StopReason>,
 }
 
-pub(crate) async fn stream_response(
+pub async fn stream_response(
     client: &Client,
     model: &str,
     request: ChatRequest,

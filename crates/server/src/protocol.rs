@@ -45,16 +45,19 @@ fn flush(
 impl ChatInput {
     pub fn into_history(self) -> anyhow::Result<ChatRequest> {
         ensure!(
-            self.trigger.as_deref().unwrap_or("submit-message") == "submit-message",
-            "only submit-message is supported; regeneration is not supported"
-        );
-        ensure!(!self.messages.is_empty(), "messages must not be empty");
-        ensure!(
             self.messages
                 .last()
                 .is_some_and(|message| message.role == "user"),
             "last message must be a user message"
         );
+        self.into_import_history()
+    }
+    pub fn into_import_history(self) -> anyhow::Result<ChatRequest> {
+        ensure!(
+            self.trigger.as_deref().unwrap_or("submit-message") == "submit-message",
+            "only submit-message is supported; regeneration is not supported"
+        );
+        ensure!(!self.messages.is_empty(), "messages must not be empty");
         let mut history = Vec::new();
         let mut ids = HashSet::new();
         let mut call_ids = HashSet::new();

@@ -1,0 +1,25 @@
+[package]
+name = "runtime"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+agent.workspace = true
+tools.workspace = true
+genai.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+futures.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+tokio-util.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+telemetry.workspace = true
+tracing.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+tracing-opentelemetry.workspace = true
+
+[lints]
+workspace = true
