@@ -1,0 +1,21 @@
+{
+  "name": "comfy-agent-evals",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "eval": "tsx src/cli.ts",
+    "eval:mock": "tsx src/cli.ts --mock",
+    "inspect": "tsx src/inspect.ts",
+    "smoke:phoenix": "tsx src/smoke.ts"
+  },
+  "dependencies": {
+    "ai": "7.0.127",
+    "@arizeai/phoenix-client": "7.16.0",
+    "@opentelemetry/api": "1.9.0",
+    "@arizeai/phoenix-otel": "2.2.0"
+  },
+  "devDependencies": { "typescript": "5.9.3", "tsx": "4.20.6", "@types/node": "22.19.0" }
+}

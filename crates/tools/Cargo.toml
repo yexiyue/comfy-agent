@@ -1,0 +1,18 @@
+[package]
+name = "tools"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tool-macros.workspace = true
+anyhow.workspace = true
+futures.workspace = true
+schemars.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

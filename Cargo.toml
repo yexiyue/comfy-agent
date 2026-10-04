@@ -1,16 +1,41 @@
-[package]
-name = "comfy-agent"
+[workspace]
+members = ["crates/*"]
+default-members = ["crates/agent"]
+resolver = "3"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
-genai = "0.7.0-rc.1"                                     # LLM 多厂商适配层（02 篇开始用）
-tokio = { version = "1", features = ["full"] }           # 异步运行时
-serde_json = "1"                                          # 工具 schema / 参数都是 JSON
-dotenvy = "0.15"                                          # .env 加载
-anyhow = "1"                                              # 错误类型统一
-tracing = "0.1"                                           # 结构化日志（17 篇升级为观测主干）
+[workspace.dependencies]
+agent = { path = "crates/agent" }
+tools = { path = "crates/tools" }
+tool-macros = { path = "crates/tool-macros" }
+genai = "0.7.0-rc.1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+serde_json = "1"
+anyhow = "1"
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+schemars = "1"
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+dotenvy = "0.15"
+tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-futures = "0.3.34"
-serde = { version = "1.0.229", features = ["derive"] }
-schemars = "1.2.2"
+uuid = { version = "1", features = ["v4"] }
+async-stream = "0.3"
+tokio-util = { version = "0.7", features = ["rt"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+telemetry = { path = "crates/telemetry" }
+opentelemetry = "0.33"
+opentelemetry_sdk = { version = "0.33", features = ["testing"] }
+opentelemetry-otlp = { version = "0.33", features = ["http-proto", "reqwest-blocking-client"] }
+tracing-opentelemetry = "0.34"
+regex = "1"
+sha2 = "0.10"
+url = "2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

@@ -1,5 +1,10 @@
 /target
 .env
+.env.*
+!.env.example
+node_modules/
+.next/
+dist/
 *.png
 outputs/
 workflows/*.compiled.json

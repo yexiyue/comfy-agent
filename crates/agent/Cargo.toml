@@ -1,0 +1,21 @@
+[package]
+name = "agent"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tools.workspace = true
+anyhow.workspace = true
+futures.workspace = true
+genai.workspace = true
+serde_json.workspace = true
+telemetry.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["net", "time", "io-util"] }
+serde.workspace = true
+schemars.workspace = true
+
+[lints]
+workspace = true
