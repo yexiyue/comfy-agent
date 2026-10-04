@@ -145,6 +145,8 @@ npm run smoke:phoenix --prefix scripts/evals # Phoenix、重启恢复与流协�
 
 协议与评测脚本创建并迁移随机子库，退出时仅清理各自子库，保留测试父库。完整生命周期与故障验证见 [持久化会话运行指南](docs/durable-sessions.md)。
 
+从零学习可阅读 [Agent 持久化与恢复教程](docs/agent-persistence-recovery.md)：通过架构图和完整时序图理解检查点、outbox、租约、暂停与前后端重连，并对比 Vercel AI SDK、WorkflowAgent 和 Temporal。
+
 ## 聊天前端
 
 本地 Phoenix 观测与评测启动见 [观测与评测指南](docs/observability.md)。使用 `docker compose -f compose.phoenix.yaml up -d` 启动 Phoenix，设置 `OTEL_ENABLED=true` 后运行后端即可查看轨迹；原始内容采集默认关闭。`scripts/evals` 通过同一 Rust SSE 后端进行确定性评分和本地实验比较。

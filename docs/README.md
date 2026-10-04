@@ -24,6 +24,10 @@ Agent 跑起来之后，学习如何定位问题和验证质量：
 
 持久化与任务生命周期：
 
+**[从零理解 Agent 持久化与恢复：关掉网页之后，任务去了哪里？](agent-persistence-recovery.md)**
+
+从会话、run、attempt 和检查点开始，通过完整时序图讲解可靠提交、暂停、外部工具副作用、租约恢复和前后端重放。对比 Vercel AI SDK 的消息保存、Redis 流重连、WorkflowAgent 与 Temporal，并说明本项目的验证证据和当前限制。
+
 **[持久化会话与后台任务运行指南](durable-sessions.md)**
 
 学习 run/attempt、检查点、outbox、租约、暂停/转向和外部副作用恢复，包含增量 HTTP 合约、前端全前缀重放、迁移与故障测试命令。
